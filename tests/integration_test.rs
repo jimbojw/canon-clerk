@@ -68,3 +68,4 @@ Rule details here.
     assert_eq!(summary.failing_verdicts, 0);
     assert!(summary.is_passing);
 }
+

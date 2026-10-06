@@ -4,8 +4,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use canon_clerk::models::Caseload;
 use canon_clerk::pipeline::{
-    ConfigResolver, Discover, Intake, MockProviderClient, ProbeStatus, ProviderClient,
-    ProviderType, Validate,
+    AnyProviderClient, ConfigResolver, Discover, GoogleProviderClient, Intake, MockProviderClient,
+    ProbeStatus, ProviderClient, ProviderType, Validate,
 };
 
 #[derive(Parser, Debug)]
@@ -190,10 +190,32 @@ async fn run_probe(args: ProbeArgs) -> Result<(), Box<dyn std::error::Error>> {
         &env_vars,
     );
 
-    let client = MockProviderClient::new_healthy(
-        format!("{:?}", resolved.model.provider),
-        resolved.model.model_name.clone(),
-    );
+    let client = if args.mock || resolved.model.provider == ProviderType::Mock {
+        AnyProviderClient::Mock(MockProviderClient::new_healthy(
+            format!("{}", resolved.model.provider),
+            resolved.model.model_name.clone(),
+        ))
+    } else {
+        match resolved.model.provider {
+            ProviderType::Gemini => {
+                if let Some(key) = resolved.credentials.api_key {
+                    AnyProviderClient::Google(GoogleProviderClient::new(
+                        key,
+                        resolved.credentials.api_endpoint,
+                        resolved.model.model_name.clone(),
+                    ))
+                } else {
+                    eprintln!("Error: Missing API key for Google Gemini provider.");
+                    eprintln!("Please configure it in ~/.config/canon-clerk/config.json (.providers.google.apiKey) or export GEMINI_API_KEY.");
+                    std::process::exit(1);
+                }
+            }
+            other => {
+                eprintln!("Error: Provider '{}' live probe not yet configured. Use --mock or configure Google Gemini.", other);
+                std::process::exit(1);
+            }
+        }
+    };
 
     let probe_result = client.probe().await?;
 
@@ -207,6 +229,9 @@ async fn run_probe(args: ProbeArgs) -> Result<(), Box<dyn std::error::Error>> {
             println!("Provider: {}", probe_result.provider);
             println!("Model:    {}", probe_result.model);
             println!("Latency:  {} ms", probe_result.latency_ms);
+            if let Some(msg) = probe_result.message {
+                println!("Message:  {}", msg);
+            }
         }
     }
 

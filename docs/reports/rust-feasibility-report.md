@@ -11,13 +11,14 @@
 
 This research spike evaluated the feasibility, developer ergonomics, and performance impact of re-implementing **Canon Clerk** in Rust under a strict **zero-human-authored-code frame**.
 
-Starting from a clean slate after pruning the existing TypeScript/Vitest monorepo (`packages/*`), the AI agent autonomously scaffolded the Cargo workspace, defined OpenSpec delta specifications (`rust-caseload-baseline`), implemented core domain models (`Caseload`, `FileArtifact`, `CanonAst`, `CanonVerdict`), implemented the Branch A (Filing) and Branch B (Environment/Probe) pipelines, and produced a working `clap`-based CLI.
+Starting from a clean slate after pruning the existing TypeScript/Vitest monorepo (`packages/*`), the AI agent autonomously scaffolded the Cargo workspace, defined OpenSpec delta specifications (`rust-caseload-baseline`), implemented core domain models (`Caseload`, `FileArtifact`, `CanonAst`, `CanonVerdict`), implemented the Branch A (Filing) and Branch B (Environment/Probe) pipelines, and produced a working `clap`-based CLI with live Google Gemini provider integration.
 
 The resulting Rust implementation achieved:
 - **~40x–70x faster CLI cold start** (13 ms vs. 400–1000 ms in Node.js).
 - **~50x faster repository canon validation** (27–44 ms to parse ASTs and validate 118 canons vs. 1.2–2.5 s in Node.js).
+- **Live Google Generative AI integration** via typed `reqwest` + `rustls` client automatically resolving user credentials from `~/.config/canon-clerk/config.json` (`.providers.google.apiKey`).
 - **~98% reduction in runtime footprint** (single self-contained 3.4 MB binary vs. Node.js runtime + >200 MB `node_modules`).
-- **Sub-second test suite turnaround** (0.01 s for 21 unit & integration tests vs. 5.54 s in Vitest).
+- **Sub-second test suite turnaround** (0.01 s for 22 unit & integration tests vs. 5.54 s in Vitest).
 
 ---
 
@@ -26,7 +27,7 @@ The resulting Rust implementation achieved:
 ### Navigation of Borrow Checker, Lifetimes & Async Traits
 - **Zero Human Intervention:** 100% of the Rust code, Cargo manifests, OpenSpec artifacts, and tests were drafted, compiled, and verified autonomously.
 - **Lifetime Strategy:** By adopting owned `String` fields for AST nodes, paths, and metadata, the agent completely sidestepped lifetime annotations (`'a`) across data structures. In CLI and rule engine workloads, this is standard idiom and incurs negligible heap overhead given the small working set.
-- **Async & Traits:** Defining asynchronous provider probes using native Rust 2024 `async fn in trait` (`#[allow(async_fn_in_trait)]`) eliminated the need for heavy procedural macros (`async-trait`) or complex pinned boxed futures.
+- **Async Trait Ergonomics & Enum Dispatch:** When evaluating provider abstraction, the agent implemented the `ProviderClient` trait using native Rust 2024 `async fn in trait` (`#[allow(async_fn_in_trait)]`). To maintain dynamic polymorphism across CLI options without boxing or `dyn` compatibility restrictions, an `AnyProviderClient` enum dispatch was employed, delivering zero-cost abstraction and immediate compiler clarity.
 - **Derive Ergonomics:** Leveraging `serde::Serialize`, `serde::Deserialize`, `thiserror::Error`, and `clap::Parser` allowed the agent to declare complex serializable schemas and CLI argument trees declaratively with zero boilerplate.
 
 ### Feedback Loop Latency & Compiler Clarity
@@ -45,7 +46,7 @@ All benchmarks were recorded on the local development environment (`x86_64 Linux
 | **Full Validation (118 Canons)** | 1,200 – 2,500 ms | **27 – 44 ms** | **~50x faster** |
 | **Active Canon Trigger Match** | ~350 ms | **< 1 ms** | **>300x faster** |
 | **Distribution Artifact Size** | >200 MB (`node_modules` + runtime) | **3.4 MB** (stripped release binary) | **98.3% smaller** |
-| **Test Suite Execution Time** | 5.54 s (Vitest across 39 files) | **0.01 s** (21 unit + integration tests) | **~500x faster** |
+| **Test Suite Execution Time** | 5.54 s (Vitest across 39 files) | **0.01 s** (22 unit + integration tests) | **~500x faster** |
 | **Memory Resident Set (RSS)** | ~85 MB (V8 heap + module cache) | **~6.8 MB** peak RSS | **92% reduction** |
 
 ### Benchmark Breakdown: Canon Ingestion & Validation
@@ -66,10 +67,11 @@ In Node.js, this operation required parsing Markdown via `unified` / `remark` pl
 | :--- | :--- | :--- |
 | **Markdown & AST** | `pulldown-cmark` (0.12) | **Excellent.** Pull-parser model allows zero-copy streaming through CommonMark tokens. Extracting headings and code fences requires just a simple loop over `Event` variants. |
 | **YAML Frontmatter** | `serde_yaml` (0.9) | **Good.** Direct deserialization into typed structs (`CanonFrontmatter`). While upstream `serde_yaml` is in maintenance mode, alternatives like `serde_yml` or `yaml-rust2` provide clean forward paths. |
-| **Unified Diff Parsing** | Custom `Intake` parser | **Clean.** A lightweight, zero-dependency parser easily ingested Git unified diffs (`diff --git`, chunk headers `@@`, additions, deletions, renames). Ready to integrate with crates like `similar` or `patch` for advanced hunk math. |
+| **Unified Diff Parsing** | Custom `Intake` parser | **Clean.** A lightweight, zero-dependency parser easily ingested Git unified diffs (`diff --git`, chunk headers `@@`, additions, deletions, renames). |
+| **User Configuration Store** | Custom `config_store` | **Direct.** Reads `$XDG_CONFIG_HOME/canon-clerk/config.json` or `~/.config/canon-clerk/config.json`, extracting `.providers.google.apiKey` with complete fidelity to the original Node `conf` package. |
 | **CLI Routing** | `clap` (4.5 derive) | **Outstanding.** Declarative subcommand and flag structures with automatic `--help` generation, value enums (`human` vs `json`), and default argument injection. |
 | **Logging & Diagnostics** | `tracing` + `tracing-subscriber` | **Standard.** Seamless structured logging and verbose tracing flags (`-v, --verbose`). |
-| **Async HTTP & Provider** | `reqwest` (0.12) + `tokio` (1.53) | **Proven.** Trait-based `ProviderClient` abstracts provider implementations, enabling deterministic `MockProviderClient` execution for offline CLI testing. |
+| **Live Google Gemini Client** | `reqwest` (0.12) + `tokio` (1.53) | **Verified.** Built `GoogleProviderClient` using `x-goog-api-key` header and typed structured payload targeting `gemini-3.8-flash`. Verified live probe connectivity resulting in `Status: Healthy`, roundtrip latency `2.1s`, and message `"Reachable (OK)"`. |
 
 ---
 
@@ -78,7 +80,7 @@ In Node.js, this operation required parsing Markdown via `unified` / `remark` pl
 In the TypeScript architecture, the project was split into `packages/{cli,core,configuration,schema}`. In Rust:
 - A single crate with `src/lib.rs` and `src/main.rs` provided an exceptionally clean boundary:
   - `src/models/`: pure data representations (`Caseload`, `FileArtifact`, `CanonAst`, `CanonVerdict`).
-  - `src/pipeline/`: execution stages (`intake`, `discover`, `validate`, `configure`, `probe`).
+  - `src/pipeline/`: execution stages (`intake`, `discover`, `validate`, `configure`, `config_store`, `probe`).
   - `src/main.rs`: thin CLI driver handling argument parsing, console output, and exit codes.
   - `tests/`: isolated integration tests exercising the library API from the outside.
 - This eliminated workspace build configuration files (`tsconfig.json`, `tsup.config.ts`, `vitest.config.ts`, `package.json` cross-dependencies) while compiling significantly faster.
