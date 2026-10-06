@@ -401,6 +401,31 @@ impl MockProviderClient {
                 }))
                 .collect();
             Ok(serde_json::json!({ "exhibits": exhibits }).to_string())
+        } else if system_instruction.contains("Apprisal") {
+            let mut assessments_map = serde_json::Map::new();
+            for line in prompt.lines() {
+                if let Some(rest) = line.strip_prefix("### Canon: `") {
+                    if let Some(end) = rest.strip_suffix('`') {
+                        assessments_map.insert(
+                            end.to_string(),
+                            serde_json::json!({
+                                "apprisalSummary": "Prospective intent touches canon domain",
+                                "apprisalScore": 0.88
+                            }),
+                        );
+                    }
+                }
+            }
+            if assessments_map.is_empty() {
+                assessments_map.insert(
+                    ".canons/cli/cli-arguments-must-represent-primary-operands.md".to_string(),
+                    serde_json::json!({
+                        "apprisalSummary": "Prospective intent touches CLI arguments",
+                        "apprisalScore": 0.88
+                    }),
+                );
+            }
+            Ok(serde_json::json!({ "assessments": assessments_map }).to_string())
         } else {
             Ok(r#"{"complianceScore":0.95,"complianceSummary":"The implementation correctly adheres to canon requirements.","annotations":[]}"#.to_string())
         }

@@ -4,9 +4,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use canon_clerk::models::{CanonAst, Caseload, FileArtifact};
 use canon_clerk::pipeline::{
-    AdmitRunner, AnyProviderClient, AuditRunner, ConfigResolver, Discover, DocketRunner,
-    GoogleProviderClient, Intake, MockProviderClient, ProbeStatus, ProviderClient, ProviderType,
-    Validate,
+    AdmitRunner, AnyProviderClient, AppriseRunner, AuditRunner, ConfigResolver, Discover,
+    DocketRunner, GoogleProviderClient, Intake, MockProviderClient, ProbeStatus, ProviderClient,
+    ProviderType, Validate,
 };
 
 #[derive(Parser, Debug)]
@@ -41,6 +41,9 @@ enum Commands {
 
     #[command(about = "Execute full end-to-end Caseload DAG adjudication audit")]
     Audit(AuditArgs),
+
+    #[command(about = "Perform prospective statutory apprisal of design intent and target paths")]
+    Apprise(AppriseArgs),
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -179,6 +182,39 @@ struct AuditArgs {
     format: OutputFormat,
 }
 
+#[derive(Args, Debug)]
+struct AppriseArgs {
+    #[arg(help = "Prospective target paths or directory containing canons")]
+    paths: Vec<PathBuf>,
+
+    #[arg(long, help = "Prospective design intent or RFC text (use '-' for stdin)")]
+    intent: Option<String>,
+
+    #[arg(
+        long,
+        default_value = "0.5",
+        help = "Minimum apprisal salience threshold [0.0, 1.0]"
+    )]
+    threshold: f32,
+
+    #[arg(long, help = "Use offline mock provider")]
+    mock: bool,
+
+    #[arg(long, help = "Model name override")]
+    model: Option<String>,
+
+    #[arg(long, help = "Output unadorned JSON to stdout")]
+    json: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value = "human",
+        help = "Output formatting"
+    )]
+    format: OutputFormat,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -201,6 +237,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Docket(args)) => run_docket(args).await,
         Some(Commands::Admit(args)) => run_admit(args).await,
         Some(Commands::Audit(args)) => run_audit(args).await,
+        Some(Commands::Apprise(args)) => run_apprise(args).await,
         None => {
             use clap::CommandFactory;
             Cli::command().print_help()?;
@@ -676,6 +713,132 @@ async fn run_audit(args: AuditArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     if !is_passing {
         std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+async fn run_apprise(args: AppriseArgs) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{IsTerminal, Read};
+
+    // 1. Missing Input Source Guard (Naked Invocation)
+    let is_stdin_piped = !std::io::stdin().is_terminal();
+    let is_stdin_requested = args.intent.as_deref() == Some("-");
+    let has_intent = args.intent.is_some() && !is_stdin_requested;
+    let has_paths = !args.paths.is_empty();
+
+    if !has_intent && !is_stdin_requested && !has_paths && !is_stdin_piped {
+        eprintln!("error: No design intent or target paths provided for apprise.");
+        eprintln!("  Hint: Provide an intent ('--intent <text>'), pipe a specification via standard input ('-'),");
+        eprintln!("        or specify prospective target paths.");
+        std::process::exit(2);
+    }
+
+    // 2. Resolve Design Intent
+    let intent_text = if is_stdin_requested || (is_stdin_piped && args.intent.is_none()) {
+        let mut buffer = String::new();
+        std::io::stdin().read_to_string(&mut buffer)?;
+        buffer.trim().to_string()
+    } else if let Some(ref text) = args.intent {
+        text.clone()
+    } else {
+        format!(
+            "Prospective changes to target paths: {}",
+            args.paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+        )
+    };
+
+    // 3. Resolve Canons and Prospective Target Paths
+    let default_canons_dir = PathBuf::from(".canons");
+    let mut canons = Vec::new();
+    let mut prospective_artifacts = Vec::new();
+
+    let mut target_paths = Vec::new();
+    for p in &args.paths {
+        if p.starts_with(".canons") || p.extension().and_then(|s| s.to_str()) == Some("md") {
+            let loaded = load_canons(p)?;
+            canons.extend(loaded);
+        } else {
+            target_paths.push(p.clone());
+        }
+    }
+
+    if canons.is_empty() && default_canons_dir.exists() {
+        canons = load_canons(&default_canons_dir)?;
+    }
+
+    for p in target_paths {
+        prospective_artifacts.push(FileArtifact::new(
+            p.to_string_lossy(),
+            canon_clerk::models::ChangeType::Modified,
+        ));
+    }
+
+    let candidate_canons: Vec<&CanonAst> = if !prospective_artifacts.is_empty() {
+        let active_ids = Discover::discover_active_canons(&canons, &prospective_artifacts);
+        canons
+            .iter()
+            .filter(|c| active_ids.contains(&c.canon_id()))
+            .collect()
+    } else {
+        canons.iter().collect()
+    };
+
+    let format = if args.json {
+        OutputFormat::Json
+    } else {
+        args.format
+    };
+
+    // 4. Zero Candidate Canon Short-Circuit
+    if candidate_canons.is_empty() {
+        match format {
+            OutputFormat::Json => {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "assessments": {}
+                }))?);
+            }
+            OutputFormat::Human => {
+                println!("0 canons triggered by prospective target scope; no applicable constraints.");
+            }
+        }
+        return Ok(());
+    }
+
+    // 5. Execute Statutory Apprisal Screening
+    let client = resolve_client(args.mock, args.model)?;
+    let apprisal = AppriseRunner::execute_apprise(
+        &candidate_canons,
+        &intent_text,
+        args.threshold,
+        &client,
+    )
+    .await?;
+
+    // 6. Render Output
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "assessments": apprisal.assessments
+            }))?);
+        }
+        OutputFormat::Human => {
+            println!("=== Canon Clerk Statutory Apprisal ===");
+            println!("Candidate Canons: {}", candidate_canons.len());
+            println!("Applicable:       {}", apprisal.applicable_count());
+            println!("Dismissed:        {}", apprisal.dismissed_count());
+            println!();
+
+            for (path, assessment) in &apprisal.assessments {
+                let badge = if assessment.is_applicable() {
+                    "[APPLICABLE]"
+                } else {
+                    "[DISMISSED]"
+                };
+                println!("{} {} (Score: {:.2})", badge, path, assessment.apprisal_score);
+                println!("    Summary: {}", assessment.apprisal_summary);
+            }
+        }
     }
 
     Ok(())

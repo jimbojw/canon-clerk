@@ -143,6 +143,50 @@ CRITICAL DIRECTIVES:
         prompt.push_str("Render your adjudication decree and output the structured JSON object.");
         prompt
     }
+
+    pub const APPRISE_SYSTEM_INSTRUCTION: &'static str = r#"You are Canon Clerk's Statutory Apprisal Screener (Jurisdictio Notificatoria).
+Your role is to perform prospective design screening: evaluate candidate canons against the prospective design intent and planned scope to determine whether each canon has prospective jurisdiction over the planned work.
+
+DIRECTIVES:
+- You are providing procedural and statutory notice BEFORE implementation begins.
+- Answer: "Given this prospective design intent and planned work, does this canon have a colorable claim of jurisdiction over the planned changes?"
+- Provide a concise rationale (apprisalSummary) justifying prospective jurisdiction before assigning the score.
+- Assign an apprisal score in [0.0, 1.0] (apprisalScore), where >= 0.5 indicates prospective applicability.
+- Output JSON in this exact structure:
+{
+  "assessments": {
+    "<canonPath>": {
+      "apprisalSummary": "<rationale>",
+      "apprisalScore": <0.0 to 1.0>
+    }
+  }
+}"#;
+
+    pub fn build_apprise_prompt(
+        canons: &[&CanonAst],
+        intent: &str,
+    ) -> String {
+        let mut prompt = String::new();
+        prompt.push_str("## PROSPECTIVE DESIGN INTENT & PLANNED SCOPE\n\n");
+        prompt.push_str(intent);
+        prompt.push_str("\n\n## CANDIDATE CANONS TO EVALUATE\n\n");
+
+        for canon in canons {
+            prompt.push_str(&format!("### Canon: `{}`\n", canon.path));
+            if let Some(fm) = &canon.frontmatter {
+                if let Some(title) = &fm.title {
+                    prompt.push_str(&format!("Title: {}\n", title));
+                }
+            }
+            prompt.push_str("Excerpt:\n");
+            let lines: Vec<&str> = canon.raw_markdown.lines().take(8).collect();
+            prompt.push_str(&lines.join("\n"));
+            prompt.push_str("\n\n---\n\n");
+        }
+
+        prompt.push_str("Evaluate every candidate canon listed above against the prospective design intent and output the structured JSON object.");
+        prompt
+    }
 }
 
 #[cfg(test)]
@@ -175,5 +219,15 @@ mod tests {
         let prompt = CascadePrompts::build_audit_prompt(&canon, &[&art]);
         assert!(prompt.contains("Invariant Rule"));
         assert!(prompt.contains("pub fn test() {}"));
+    }
+
+    #[test]
+    fn test_apprise_prompt_generation() {
+        let canon = CanonAst::new(".canons/auth-cache.md", "# Cache Expiry\nCache must have expiry.");
+        let prompt = CascadePrompts::build_apprise_prompt(&[&canon], "Refactor authentication provider caching");
+        assert!(prompt.contains("PROSPECTIVE DESIGN INTENT"));
+        assert!(prompt.contains("Refactor authentication provider caching"));
+        assert!(prompt.contains(".canons/auth-cache.md"));
+        assert!(prompt.contains("Cache must have expiry."));
     }
 }

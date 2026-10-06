@@ -1,3 +1,4 @@
+use super::apprise::CaseloadApprisal;
 use super::artifact::FileArtifact;
 use super::canon::{CanonAst, CanonVerdict};
 use serde::{Deserialize, Serialize};
@@ -13,13 +14,15 @@ pub struct CaseloadSummary {
     pub is_passing: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Caseload {
     pub id: String,
     pub artifacts: Vec<FileArtifact>,
     pub canons: Vec<CanonAst>,
     pub active_canon_ids: Vec<String>,
     pub verdicts: Vec<CanonVerdict>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apprisal: Option<CaseloadApprisal>,
 }
 
 impl Caseload {
@@ -30,6 +33,7 @@ impl Caseload {
             canons: Vec::new(),
             active_canon_ids: Vec::new(),
             verdicts: Vec::new(),
+            apprisal: None,
         }
     }
 
