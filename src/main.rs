@@ -369,6 +369,12 @@ fn resolve_client(mock: bool, model: Option<String>) -> Result<AnyProviderClient
 
 fn resolve_diff(diff_file: Option<PathBuf>) -> Result<String, Box<dyn std::error::Error>> {
     if let Some(diff_path) = diff_file {
+        if diff_path.as_os_str() == "-" {
+            use std::io::Read;
+            let mut buffer = String::new();
+            std::io::stdin().read_to_string(&mut buffer)?;
+            return Ok(buffer);
+        }
         if diff_path.exists() {
             return Ok(std::fs::read_to_string(diff_path)?);
         } else {
