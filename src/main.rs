@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use canon_clerk::models::{CanonAst, Caseload, FileArtifact};
+use canon_clerk::models::{CanonAst, Caseload, ChangeType, FileArtifact};
 use canon_clerk::pipeline::{
     AdmitRunner, AnyProviderClient, AppriseRunner, AuditRunner, ConfigResolver, Discover,
     DocketRunner, GoogleProviderClient, Intake, MockProviderClient, ProbeStatus, ProviderClient,
@@ -386,14 +386,43 @@ fn resolve_diff(diff_file: Option<PathBuf>) -> Result<String, Box<dyn std::error
         }
     }
 
-    if let Ok(output) = std::process::Command::new("git").args(["diff", "HEAD~1"]).output() {
+    // Check unstaged git diff
+    if let Ok(output) = std::process::Command::new("git").args(["diff"]).output() {
         let diff_str = String::from_utf8_lossy(&output.stdout).to_string();
         if !diff_str.trim().is_empty() {
             return Ok(diff_str);
         }
     }
 
-    if let Ok(output) = std::process::Command::new("git").args(["diff"]).output() {
+    // Check staged git diff
+    if let Ok(output) = std::process::Command::new("git").args(["diff", "--cached"]).output() {
+        let diff_str = String::from_utf8_lossy(&output.stdout).to_string();
+        if !diff_str.trim().is_empty() {
+            return Ok(diff_str);
+        }
+    }
+
+    // Check diff against merge-base with upstream
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["merge-base", "HEAD", "@{upstream}"])
+        .output()
+    {
+        let base_commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !base_commit.is_empty() {
+            if let Ok(diff_output) = std::process::Command::new("git")
+                .args(["diff", &base_commit])
+                .output()
+            {
+                let diff_str = String::from_utf8_lossy(&diff_output.stdout).to_string();
+                if !diff_str.trim().is_empty() {
+                    return Ok(diff_str);
+                }
+            }
+        }
+    }
+
+    // Fallback to previous commit diff
+    if let Ok(output) = std::process::Command::new("git").args(["diff", "HEAD~1"]).output() {
         let diff_str = String::from_utf8_lossy(&output.stdout).to_string();
         if !diff_str.trim().is_empty() {
             return Ok(diff_str);
@@ -424,6 +453,54 @@ fn load_canons(path: &Path) -> Result<Vec<CanonAst>, Box<dyn std::error::Error>>
         }
     }
     Ok(canons)
+}
+
+fn summarize_diff(diff_text: &str, artifacts: &[FileArtifact]) -> String {
+    if diff_text.is_empty() {
+        return "(No diff provided; evaluating overall repository context)".to_string();
+    }
+
+    let mut summary = String::new();
+    let (mut active, deleted): (Vec<&FileArtifact>, Vec<&FileArtifact>) = artifacts
+        .iter()
+        .partition(|a| a.change_type != ChangeType::Deleted);
+
+    if active.is_empty() {
+        active = deleted;
+    }
+
+    summary.push_str(&format!(
+        "Modified/added active files ({} active, {} total in diff):\n",
+        active.len(),
+        artifacts.len()
+    ));
+    for art in active.iter().take(40) {
+        summary.push_str(&format!("- {} ({:?})\n", art.path, art.change_type));
+    }
+    if active.len() > 40 {
+        summary.push_str(&format!("- ... and {} more files\n", active.len() - 40));
+    }
+
+    summary.push_str("\nDiff excerpt:\n");
+    let mut lines_count = 0;
+    for art in &active {
+        if let Some(diff) = &art.diff {
+            summary.push_str(&format!("\n--- File: {} ---\n", art.path));
+            for line in diff.lines() {
+                summary.push_str(line);
+                summary.push('\n');
+                lines_count += 1;
+                if lines_count >= 150 {
+                    break;
+                }
+            }
+        }
+        if lines_count >= 150 {
+            break;
+        }
+    }
+
+    summary
 }
 
 async fn run_probe(args: ProbeArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -481,11 +558,7 @@ async fn run_docket(args: DocketArgs) -> Result<(), Box<dyn std::error::Error>> 
         canons.iter().collect()
     };
 
-    let diff_summary = if diff_text.is_empty() {
-        "(No diff provided; evaluating overall repository context)".to_string()
-    } else {
-        diff_text.lines().take(150).collect::<Vec<&str>>().join("\n")
-    };
+    let diff_summary = summarize_diff(&diff_text, &artifacts);
 
     let assessments = DocketRunner::execute_docket(&candidate_canons, &diff_summary, &client).await?;
     let docketed_count = assessments.iter().filter(|a| a.is_docketed()).count();
@@ -533,7 +606,7 @@ async fn run_admit(args: AdmitArgs) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let diff_summary = diff_text.lines().take(150).collect::<Vec<&str>>().join("\n");
+    let diff_summary = summarize_diff(&diff_text, &artifacts);
     let candidate_canons: Vec<&CanonAst> = canons.iter().collect();
 
     let assessments = DocketRunner::execute_docket(&candidate_canons, &diff_summary, &client).await?;
@@ -606,7 +679,7 @@ async fn run_audit(args: AuditArgs) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let diff_summary = diff_text.lines().take(150).collect::<Vec<&str>>().join("\n");
+    let diff_summary = summarize_diff(&diff_text, &artifacts);
     let candidate_canons: Vec<&CanonAst> = canons.iter().collect();
 
     let assessments = DocketRunner::execute_docket(&candidate_canons, &diff_summary, &client).await?;
@@ -656,16 +729,29 @@ async fn run_audit(args: AuditArgs) -> Result<(), Box<dyn std::error::Error>> {
             .map(|e| e.file_path.clone())
             .collect();
 
-        let admitted_artifacts: Vec<&FileArtifact> = artifacts
+        let mut admitted_artifacts: Vec<FileArtifact> = artifacts
             .iter()
             .filter(|a| admitted_paths.contains(&a.path))
+            .cloned()
             .collect();
 
         if admitted_artifacts.is_empty() {
             continue;
         }
 
-        let adjudication = AuditRunner::execute_audit(canon, &admitted_artifacts, &client).await?;
+        // Enrich admitted exhibits with full file content if available on disk
+        for art in &mut admitted_artifacts {
+            if art.content.is_none() {
+                if let Ok(content) = std::fs::read_to_string(&art.path) {
+                    if content.len() < 120_000 {
+                        art.content = Some(content);
+                    }
+                }
+            }
+        }
+
+        let admitted_refs: Vec<&FileArtifact> = admitted_artifacts.iter().collect();
+        let adjudication = AuditRunner::execute_audit(canon, &admitted_refs, &client).await?;
         adjudications.push(adjudication);
     }
 
@@ -685,6 +771,9 @@ async fn run_audit(args: AuditArgs) -> Result<(), Box<dyn std::error::Error>> {
             println!("=== Canon Clerk Audit Adjudication ===");
             println!("Docketed Canons Evaluated: {}", docketed_canons.len());
             println!("Statutes Adjudicated:      {}", adjudications.len());
+            if adjudications.is_empty() {
+                println!("Note:                      No files were admitted as evidence for the docketed canons.");
+            }
             println!("Outcome:                   {}", if is_passing { "PASS" } else { "FAIL" });
             println!();
 

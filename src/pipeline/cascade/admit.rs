@@ -1,4 +1,4 @@
-use crate::models::{AdmittedExhibit, CanonAst, FileArtifact};
+use crate::models::{AdmittedExhibit, CanonAst, ChangeType, FileArtifact};
 use crate::pipeline::cascade::prompts::CascadePrompts;
 use crate::pipeline::probe::{AnyProviderClient, ProbeError};
 use serde::Deserialize;
@@ -31,26 +31,38 @@ impl AdmitRunner {
             return Ok(Vec::new());
         }
 
-        let prompt = CascadePrompts::build_admit_prompt(canon, artifacts);
-        let raw_json = client
-            .generate_structured_json(CascadePrompts::ADMIT_SYSTEM_INSTRUCTION, &prompt)
-            .await?;
+        // Prefer active (non-deleted) artifacts if available, to prevent hundreds of
+        // deleted files from drowning out active implementation artifacts during large refactors.
+        let non_deleted: Vec<&FileArtifact> = artifacts
+            .iter()
+            .filter(|a| a.change_type != ChangeType::Deleted)
+            .copied()
+            .collect();
+        let target_artifacts = if !non_deleted.is_empty() {
+            &non_deleted[..]
+        } else {
+            artifacts
+        };
 
-        let parsed: AdmitResponse = serde_json::from_str(&raw_json)
-            .map_err(|e| ProbeError::Network(format!("Failed to parse admit JSON: {}", e)))?;
+        let mut exhibits = Vec::new();
+        for chunk in target_artifacts.chunks(15) {
+            let prompt = CascadePrompts::build_admit_prompt(canon, chunk);
+            let raw_json = client
+                .generate_structured_json(CascadePrompts::ADMIT_SYSTEM_INSTRUCTION, &prompt)
+                .await?;
 
-        let exhibits = parsed
-            .exhibits
-            .into_iter()
-            .map(|item| {
-                AdmittedExhibit::new(
+            let parsed: AdmitResponse = serde_json::from_str(&raw_json)
+                .map_err(|e| ProbeError::Network(format!("Failed to parse admit JSON: {}", e)))?;
+
+            for item in parsed.exhibits {
+                exhibits.push(AdmittedExhibit::new(
                     canon.path.clone(),
                     item.file_path,
                     item.admissibility_score,
                     item.admissibility_summary,
-                )
-            })
-            .collect();
+                ));
+            }
+        }
 
         Ok(exhibits)
     }
