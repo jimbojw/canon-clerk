@@ -6,9 +6,9 @@
 - [x] 1.3 Implement `Caseload` aggregate state container with unit tests
 
 ## 2. Branch A Pipeline (Filing)
-- [ ] 2.1 Implement `intake` module for parsing unified diffs and file paths with unit tests
-- [ ] 2.2 Implement `discover` module for evaluating `exists:` patterns and trigger globs with unit tests
-- [ ] 2.3 Implement `validate` module for YAML frontmatter and Markdown AST validation with unit tests
+- [x] 2.1 Implement `intake` module for parsing unified diffs and file paths with unit tests
+- [x] 2.2 Implement `discover` module for evaluating `exists:` patterns and trigger globs with unit tests
+- [x] 2.3 Implement `validate` module for YAML frontmatter and Markdown AST validation with unit tests
 
 ## 3. Branch B Pipeline (Environment & Probe)
 - [ ] 3.1 Implement `configure` module for offline provider credential and model settings resolution with unit tests
