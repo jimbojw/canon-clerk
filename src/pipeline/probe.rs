@@ -42,6 +42,8 @@ pub trait ProviderClient: Send + Sync {
 
 #[derive(Debug, Serialize)]
 struct GeminiGenerateContentRequest<'a> {
+    #[serde(rename = "systemInstruction", skip_serializing_if = "Option::is_none")]
+    system_instruction: Option<GeminiContentRequest<'a>>,
     contents: Vec<GeminiContentRequest<'a>>,
     #[serde(rename = "generationConfig")]
     generation_config: GeminiGenerationConfig<'a>,
@@ -65,8 +67,26 @@ struct GeminiGenerationConfig<'a> {
 
 #[derive(Debug, Deserialize)]
 struct GeminiGenerateContentResponse {
+    #[serde(default)]
+    candidates: Vec<GeminiCandidateResponse>,
     #[serde(rename = "modelVersion")]
     model_version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiCandidateResponse {
+    content: Option<GeminiContentResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiContentResponse {
+    #[serde(default)]
+    parts: Vec<GeminiPartResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiPartResponse {
+    text: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +136,69 @@ impl GoogleProviderClient {
             m
         }
     }
+
+    pub async fn generate_structured_json(
+        &self,
+        system_instruction: &str,
+        prompt: &str,
+    ) -> Result<String, ProbeError> {
+        let raw_base = self
+            .base_url
+            .as_deref()
+            .unwrap_or("https://generativelanguage.googleapis.com");
+        let base = raw_base.trim_end_matches('/');
+        let model_name = self.normalized_model_name();
+
+        let url = format!("{}/v1beta/models/{}:generateContent", base, model_name);
+
+        let payload = GeminiGenerateContentRequest {
+            system_instruction: Some(GeminiContentRequest {
+                parts: vec![GeminiPartRequest {
+                    text: system_instruction,
+                }],
+            }),
+            contents: vec![GeminiContentRequest {
+                parts: vec![GeminiPartRequest {
+                    text: prompt,
+                }],
+            }],
+            generation_config: GeminiGenerationConfig {
+                response_mime_type: "application/json",
+            },
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .header("x-goog-api-key", &self.api_key)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| ProbeError::Network(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(ProbeError::Network(format!("Google API HTTP {}: {}", status, text)));
+        }
+
+        let parsed: GeminiGenerateContentResponse = response
+            .json()
+            .await
+            .map_err(|e| ProbeError::Network(format!("Failed to parse Google API response: {}", e)))?;
+
+        let first_text = parsed
+            .candidates
+            .into_iter()
+            .next()
+            .and_then(|c| c.content)
+            .and_then(|c| c.parts.into_iter().next())
+            .and_then(|p| p.text)
+            .ok_or_else(|| ProbeError::Network("No text candidate returned by Gemini".to_string()))?;
+
+        Ok(first_text)
+    }
 }
 
 impl ProviderClient for GoogleProviderClient {
@@ -130,6 +213,7 @@ impl ProviderClient for GoogleProviderClient {
         let url = format!("{}/v1beta/models/{}:generateContent", base, model_name);
 
         let payload = GeminiGenerateContentRequest {
+            system_instruction: None,
             contents: vec![GeminiContentRequest {
                 parts: vec![GeminiPartRequest {
                     text: "Respond with a JSON object containing \"ok\": true to verify connectivity.",
@@ -269,6 +353,22 @@ impl ProviderClient for MockProviderClient {
     }
 }
 
+impl MockProviderClient {
+    pub async fn generate_structured_json(
+        &self,
+        system_instruction: &str,
+        _prompt: &str,
+    ) -> Result<String, ProbeError> {
+        if system_instruction.contains("Docket") {
+            Ok(r#"{"assessments":[{"canonPath":".canons/cli/cli-arguments-must-represent-primary-operands.md","colorabilitySummary":"Touches CLI positional arguments","colorabilityScore":0.85}]}"#.to_string())
+        } else if system_instruction.contains("admissibility") {
+            Ok(r#"{"exhibits":[{"filePath":"src/main.rs","admissibilitySummary":"Contains CLI argument parser","admissibilityScore":0.9}]}"#.to_string())
+        } else {
+            Ok(r#"{"complianceScore":0.95,"complianceSummary":"The CLI arguments correctly adhere to positional operand requirements.","annotations":[]}"#.to_string())
+        }
+    }
+}
+
 pub enum AnyProviderClient {
     Google(GoogleProviderClient),
     Mock(MockProviderClient),
@@ -279,6 +379,19 @@ impl ProviderClient for AnyProviderClient {
         match self {
             Self::Google(client) => client.probe().await,
             Self::Mock(client) => client.probe().await,
+        }
+    }
+}
+
+impl AnyProviderClient {
+    pub async fn generate_structured_json(
+        &self,
+        system_instruction: &str,
+        prompt: &str,
+    ) -> Result<String, ProbeError> {
+        match self {
+            Self::Google(client) => client.generate_structured_json(system_instruction, prompt).await,
+            Self::Mock(client) => client.generate_structured_json(system_instruction, prompt).await,
         }
     }
 }

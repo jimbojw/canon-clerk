@@ -6,7 +6,7 @@ pub mod intake;
 pub mod probe;
 pub mod validate;
 
-pub use cascade::CascadePrompts;
+pub use cascade::{AdmitRunner, CascadePrompts, DocketRunner};
 pub use config_store::{ConfigFile, ProviderConfig};
 pub use configure::{ConfigResolver, Credentials, ModelConfig, ProviderType, ResolvedEnvironment};
 pub use discover::Discover;
