@@ -11,8 +11,8 @@
 - [x] 2.3 Implement `validate` module for YAML frontmatter and Markdown AST validation with unit tests
 
 ## 3. Branch B Pipeline (Environment & Probe)
-- [ ] 3.1 Implement `configure` module for offline provider credential and model settings resolution with unit tests
-- [ ] 3.2 Implement `probe` module and `MockProviderClient` for offline provider ping with unit tests
+- [x] 3.1 Implement `configure` module for offline provider credential and model settings resolution with unit tests
+- [x] 3.2 Implement `probe` module and `MockProviderClient` for offline provider ping with unit tests
 
 ## 4. CLI Entrypoint & Benchmarks
 - [ ] 4.1 Implement `clap`-based CLI in `src/main.rs` exposing `validate` subcommand and `--help`
