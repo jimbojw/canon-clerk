@@ -1,8 +1,8 @@
 # Tasks
 
 ## 1. Cascade Data Models & Prompts
-- [ ] 1.1 Implement `ColorabilityAssessment`, `AdmittedExhibit`, `CanonAdjudication`, and `CodeAnnotation` in `src/models/cascade.rs` with unit tests
-- [ ] 1.2 Implement prompt builders and structured JSON generation in `src/pipeline/cascade/prompts.rs` with unit tests
+- [x] 1.1 Implement `ColorabilityAssessment`, `AdmittedExhibit`, `CanonAdjudication`, and `CodeAnnotation` in `src/models/cascade.rs` with unit tests
+- [x] 1.2 Implement prompt builders and structured JSON generation in `src/pipeline/cascade/prompts.rs` with unit tests
 
 ## 2. Docket and Admit Stages
 - [ ] 2.1 Implement `execute_docket` in `src/pipeline/cascade/docket.rs` with unit tests and mock provider
