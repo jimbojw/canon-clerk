@@ -31,6 +31,7 @@
 export interface IntakeOptions {
   readonly prTitle?: string | undefined;
   readonly prBody?: string | undefined;
+  readonly intent?: string | undefined;
   readonly targetPaths?: readonly string[] | undefined;
   readonly patchContent?: string | undefined;
   readonly allTargets?: boolean | undefined;
@@ -54,6 +55,9 @@ export interface CaseloadIntake {
   /** PR markdown description or commit body */
   readonly pr_body?: string | undefined;
 
+  /** Design intent or prospective plan description */
+  readonly intent?: string | undefined;
+
   /** Scope of intake targets */
   readonly scope?: 'targeted' | 'all-targets' | undefined;
 
@@ -73,7 +77,7 @@ export interface CaseloadIntake {
    - **Missing Source Guard (Naked Invocation):** Invoking `canon-clerk intake` with zero sources fails fast with exit code `2` (Usage Error) and prints actionable remediation guidance. The CLI never silently hangs waiting for input on a TTY.
    - **Empty Stream Outcome (Legitimate No-op):** An explicitly designated source that yields zero changes (e.g. `git diff origin/main | canon-clerk intake --diff -` on a clean branch) successfully produces an empty filing (`diffs: {}`, `targetPaths: []`) and exits `0`.
 2. **Tendered Exhibits Cataloging:** Captures raw literal exhibits directly from the invocation context:
-   - Metadata exhibits: `pr_title`, `pr_body`, and any `linkedIssues`.
+   - Metadata exhibits: `pr_title`, `pr_body`, design `intent`, and any `linkedIssues`.
    - File exhibits: Unified patch hunks parsed into immutable `FileArtifact` objects (`linesAdded`, `linesDeleted`, `patch`, `status`).
 3. **Exhibit Discovery Directives Cataloging:** When file paths, directory pointers, or glob patterns are provided, packages them as directives for downstream resolution in `discover`.
 4. **Target Scope Normalization:** When `allTargets: true` is passed, flags `scope: 'all-targets'` to instruct `discover` to materialize the entire repository codebase as target exhibits. (Note the crucial distinction: `--all-targets` operates on the *subject-matter codebase*, whereas `--all-canons` in `discover` operates on the *governing rule packs*).
@@ -89,6 +93,9 @@ The CLI exposes `intake` as an imperative subcommand that adapts terminal argume
 # Ingest via direct target paths:
 canon-clerk intake packages/cli/src/app.ts
 canon-clerk intake 'src/**/*.ts'
+
+# Ingest via prospective design intent:
+canon-clerk intake --intent "Implement round-robin auth provider rotation" packages/auth/src
 
 # Ingest via newline-delimited stdin path tokens:
 git diff origin/main --name-only | canon-clerk intake -
@@ -106,6 +113,7 @@ canon-clerk intake --diff pr-42.patch --caseload existing.json --json
 ### CLI Flags & Environment
 - `-` (Positional): Reads newline-delimited paths from stdin.
 - `--diff <path|->`: Ingests unified diff patch from file or stdin.
+- `--intent <text>`: Ingests prospective design intent or plan description.
 - `--all-targets`: Ingests all repository files as target artifacts (used for full-repo sweeps).
 - `--pr-title <text>`: Ingests PR title text.
 - `--pr-body <text>` / `--pr-body-file <path>`: Ingests PR description.

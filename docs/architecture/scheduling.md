@@ -21,21 +21,21 @@ The full DAG consists of:
 - **Branch A (The Filing Track):** `intake` $\longrightarrow$ `discover` $\longrightarrow$ `validate`
 - **Branch B (The Environment Track):** `configure`
 - **Diagnostic Leaf:** `probe` (depends strictly on `configure`)
-- **The Heuristic Cascade:** `docket` $\longrightarrow$ `admit` $\longrightarrow$ `audit` (depends on `validate` and `configure`)
+- **Dual Track Convergence:**
+  - **The Contentious Track (Adjudication of In-Flight Changes):** `docket` $\longrightarrow$ `admit` $\longrightarrow$ `audit`
+  - **The Apprisal Track (Prospective Jurisprudence):** `apprise` (evaluates prospective design intent against candidate canons, bypassing `docket`)
 
-```text
-       [ intake ]
-           │
-           ▼
-      [ discover ]
-           │
-           ▼
-      [ validate ] ──────┐
-                         ▼
-  [ configure ] ────► [ docket ] ────► [ admit ] ────► [ audit ]
-        │
-        ▼ (diagnostic branch)
-     [ probe ]
+```mermaid
+flowchart TD
+    intake --> discover --> validate
+    configure -.-> probe["probe (diagnostic)"]
+
+    validate --> docket
+    configure --> docket
+    docket --> admit --> audit
+
+    validate --> apprise["apprise (apprisal)"]
+    configure --> apprise
 ```
 
 ### Dependency Closure Calculation
@@ -43,14 +43,15 @@ When an operator or CI workflow executes a subcommand $T$, the runner constructs
 
 | Terminus Node ($T$) | Transitive Dependency Closure $\text{Closure}(T)$ | Pruned Branches & Nodes |
 | :--- | :--- | :--- |
-| `intake` | $\{\text{intake}\}$ | Branch B (`configure`), `probe`, downstream nodes (`discover`, `validate`, `docket`, `admit`, `audit`) |
-| `discover` | $\{\text{intake}, \text{discover}\}$ | Branch B (`configure`), `probe`, downstream nodes (`validate`, `docket`, `admit`, `audit`) |
-| `validate` | $\{\text{intake}, \text{discover}, \text{validate}\}$ | Branch B (`configure`), `probe`, downstream nodes (`docket`, `admit`, `audit`) |
-| `configure` | $\{\text{configure}\}$ | Branch A (`intake`, `discover`, `validate`), `probe`, adjudication spine (`docket`, `admit`, `audit`) |
-| `probe` | $\{\text{configure}, \text{probe}\}$ | Branch A (`intake`, `discover`, `validate`), adjudication spine (`docket`, `admit`, `audit`) |
-| `docket` | $\{\text{intake}, \text{discover}, \text{validate}, \text{configure}, \text{docket}\}$ | `probe`, downstream nodes (`admit`, `audit`) |
-| `admit` | $\{\text{intake}, \text{discover}, \text{validate}, \text{configure}, \text{docket}, \text{admit}\}$ | `probe`, `audit` |
-| `audit` | $\{\text{intake}, \text{discover}, \text{validate}, \text{configure}, \text{docket}, \text{admit}, \text{audit}\}$ | `probe` |
+| `intake` | $\{\text{intake}\}$ | Branch B (`configure`), `probe`, downstream nodes (`discover`, `validate`, `docket`, `admit`, `audit`, `apprise`) |
+| `discover` | $\{\text{intake}, \text{discover}\}$ | Branch B (`configure`), `probe`, downstream nodes (`validate`, `docket`, `admit`, `audit`, `apprise`) |
+| `validate` | $\{\text{intake}, \text{discover}, \text{validate}\}$ | Branch B (`configure`), `probe`, downstream nodes (`docket`, `admit`, `audit`, `apprise`) |
+| `configure` | $\{\text{configure}\}$ | Branch A (`intake`, `discover`, `validate`), `probe`, adjudication/apprisal spines (`docket`, `admit`, `audit`, `apprise`) |
+| `probe` | $\{\text{configure}, \text{probe}\}$ | Branch A (`intake`, `discover`, `validate`), adjudication/apprisal spines (`docket`, `admit`, `audit`, `apprise`) |
+| `docket` | $\{\text{intake}, \text{discover}, \text{validate}, \text{configure}, \text{docket}\}$ | `probe`, `apprise`, downstream adjudication nodes (`admit`, `audit`) |
+| `admit` | $\{\text{intake}, \text{discover}, \text{validate}, \text{configure}, \text{docket}, \text{admit}\}$ | `probe`, `apprise`, `audit` |
+| `audit` | $\{\text{intake}, \text{discover}, \text{validate}, \text{configure}, \text{docket}, \text{admit}, \text{audit}\}$ | `probe`, `apprise` |
+| `apprise` | $\{\text{intake}, \text{discover}, \text{validate}, \text{configure}, \text{apprise}\}$ | `probe`, contentious adjudication spine (`docket`, `admit`, `audit`) |
 
 ### Transitive Closure Pruning Rules
 1. **Branch A Independence:** `configure` and `probe` execute with zero knowledge of Git diffs, modified files, or repository canons.
@@ -139,12 +140,13 @@ The scheduler determines the node sequence using a deterministic static table. F
 | `canon-clerk docket` | `[intake, discover, validate, configure, docket]` | Skips any node whose corresponding field (`.intake`, `.discovery`, `.validation`, `.config`, `.docket`) is already present |
 | `canon-clerk admit` | `[intake, discover, validate, configure, docket, admit]` | Skips any node whose corresponding field is already populated |
 | `canon-clerk audit` | `[intake, discover, validate, configure, docket, admit, audit]` | Skips any node whose corresponding field is already populated |
+| `canon-clerk apprise` | `[intake, discover, validate, configure, apprise]` | Skips any node whose corresponding field (`.intake`, `.discovery`, `.validation`, `.config`, `.apprisal`) is already present |
 
 ### Missing Input Source Guard vs. Empty Stream Short-Circuit
 The scheduler and CLI enforce strict input handling to distinguish operator error from legitimate no-ops:
 
 1. **Missing Source Guard (Naked Invocation $\implies$ Exit 2):**  
-   When a subcommand requiring filing context or explicit scope (`intake`, `discover`, `validate`, `docket`, `admit`, `audit`) is invoked without file arguments, diff flags (`--diff`), stream tokens (`-`), an incoming `--caseload`, or an explicit scope flag (`--all-canons`, `--all-targets`), execution immediately terminates with **exit code 2** (Usage Error) and prints actionable guidance. The CLI never silently hangs waiting for input on a TTY.
+   When a subcommand requiring filing context or explicit scope (`intake`, `discover`, `validate`, `docket`, `admit`, `audit`, `apprise`) is invoked without file arguments, diff flags (`--diff`), intent flags (`--intent`), stream tokens (`-`), an incoming `--caseload`, or an explicit scope flag (`--all-canons`, `--all-targets`), execution immediately terminates with **exit code 2** (Usage Error) and prints actionable guidance. The CLI never silently hangs waiting for input on a TTY.
 
 2. **Empty Stream Short-Circuit (Legitimate No-op $\implies$ Exit 0):**  
    When an operator explicitly designates an input source (e.g. `git diff origin/main | canon-clerk audit --diff -`) and that source produces zero changes:
@@ -153,11 +155,12 @@ The scheduler and CLI enforce strict input handling to distinguish operator erro
    - The runner logs `0 modified files; 0 candidate canons matched` and short-circuits cleanly with **exit code 0**.
 
 3. **The Case or Controversy Invariant:**  
-   The heuristic adjudication spine (`docket`, `admit`, `audit`) evaluates the application of canons *as applied to a concrete change*. While statutory linting can operate in the abstract (`validate --all-canons`), running adjudication on a null intake (e.g. `canon-clerk docket --all-canons` without target files) is rejected with **exit code 2**: a court cannot open an active docket or hold a trial without an underlying complaint or controversy.
+   The heuristic adjudication spine (`docket`, `admit`, `audit`) evaluates the application of canons *as applied to a concrete change*. While statutory linting can operate in the abstract (`validate --all-canons`), running adjudication on a null intake (e.g. `canon-clerk docket --all-canons` without target files) is rejected with **exit code 2**: a court cannot open an active docket or hold a trial without an underlying complaint or controversy. In contrast, the prospective apprisal spine (`apprise`) operates under **Statutory Apprisal Authority**, taking prospective design intent queries and prospective file paths to determine governing statutes.
 
 ### Short-Circuit Fast Exit Conditions
-Across the pipeline, four deterministic short-circuit conditions trigger early termination:
+Across the pipeline, five deterministic short-circuit conditions trigger early termination:
 1. **At `discover`:** If `candidateCanons.length === 0` $\implies$ Exit `0` immediately (`intake` and `discovery` attached to emitted Caseload; downstream nodes skipped).
 2. **At `validate`:** If `validation.hasErrors === true` $\implies$ Exit `1` immediately (malformed canon syntax; zero tokens spent).
 3. **At `docket`:** If `activeDocket.length === 0` $\implies$ Exit `0` immediately (all candidate canons dismissed at macro screening; zero trials scheduled).
 4. **At `admit`:** If all active cases retain zero admitted exhibits $\implies$ Exit `0` immediately (no admissible evidence; zero trials scheduled).
+5. **At `apprise`:** If `candidateCanons.length === 0` $\implies$ Exit `0` immediately (all candidate canons dismissed at discovery; empty apprisal brief attached to emitted Caseload).

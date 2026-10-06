@@ -24,7 +24,8 @@ $$
 \begin{aligned}
 \text{Branch A (Filing Track):}\quad & \text{intake} \longrightarrow \text{discover} \longrightarrow \text{validate} \\
 \text{Branch B (Environment Track):}\quad & \text{configure} \quad (\longrightarrow \text{probe}) \\
-\text{Convergence \& Cascade:}\quad & \{\text{validate}, \text{configure}\} \longrightarrow \text{docket} \longrightarrow \text{admit} \longrightarrow \text{audit}
+\text{Adjudication Spine:}\quad & \{\text{validate}, \text{configure}\} \longrightarrow \text{docket} \longrightarrow \text{admit} \longrightarrow \text{audit} \\
+\text{Apprisal Track:}\quad & \{\text{validate}, \text{configure}\} \longrightarrow \text{apprise}
 \end{aligned}
 $$
 
@@ -32,23 +33,25 @@ When invoked, a subcommand executes only the **transitive dependency closure** r
 
 ---
 
-## 2. DAG Topology: Two Feeder Branches $\to$ Adjudication Spine
+## 2. DAG Topology: Two Feeder Branches $\to$ Adjudication Spine & Apprisal Track
 
-The DAG consists of **Two Feeder Branches** that converge at `docket`, followed by the **Adjudication Spine**, with an auxiliary diagnostic leaf for provider health:
+The DAG consists of **Two Feeder Branches** that converge at `docket` (for dispute adjudication) and `apprise` (for prospective statutory notice), followed by the **Adjudication Spine**, with an auxiliary diagnostic leaf for provider health:
 
 1. **Branch A: The Filing Track (`intake` $\longrightarrow$ `discover` $\longrightarrow$ `validate`):**  
-   Ingests in-flight diffs or target paths, verifies state preconditions (`exists:`), matches candidate canon triggers, and validates candidate canon ASTs and schemas. Completely local, deterministic, and requires 0 tokens and zero API credentials.
+   Ingests in-flight diffs, target paths, or prospective design intent, verifies state preconditions (`exists:`), matches candidate canon triggers, and validates candidate canon ASTs and schemas. Completely local, deterministic, and requires 0 tokens and zero API credentials.
 2. **Branch B: The Environment Track (`configure`):**  
    Resolves provider credentials (`GEMINI_API_KEY`), model specifiers, reasoning budgets, and workspace boundaries. Completely offline, deterministic, and completes in <5ms with 0 tokens and zero network calls.
 3. **Diagnostic Leaf (`probe`):**  
    An auxiliary termination node depending strictly on `configure`. Executes live provider connectivity and latency tests without triggering an audit run.
 4. **The Heuristic Cascade (`docket` $\longrightarrow$ `admit` $\longrightarrow$ `audit`):**  
    Converges at `docket` (requiring both validated candidate canons and active provider configuration), followed by exhibit admissibility screening (`admit`) and single-trial adjudication (`audit`).
+5. **The Prospective Apprisal Track (`apprise`):**  
+   Converges at `apprise` (requiring validated candidate canons and provider configuration) to evaluate prospective design intent before implementation, completely bypassing diff parsing, `docket`, `admit`, and `audit`.
 
 ```mermaid
 flowchart TD
     subgraph BranchA ["Branch A: The Filing (Deterministic · 100% Local · 0 Tokens · No Credentials)"]
-        InFlight["In-Flight Change<br/>(Target Paths, Globs, or Diff Stream)"] --> S1["intake<br/>(Parse diffs, target paths/globs, & PR metadata → FileArtifacts)"]
+        InFlight["In-Flight Change<br/>(Target Paths, Globs, Diff Stream, or Intent)"] --> S1["intake<br/>(Parse diffs, target paths/globs, & PR metadata → FileArtifacts)"]
         S1 --> S2["discover<br/>(Check exists: preconditions, match triggers, & prune exhibits)"]
         S2 --> S3["validate<br/>(AST & schema pre-flight of candidate canons)"]
     end
@@ -61,6 +64,10 @@ flowchart TD
         S4 -.-> S4_Probe["probe<br/>(Live provider connectivity & latency test)"]
     end
 
+    subgraph ApprisalTrack ["The Apprisal Track (Design-Time · Statutory Notice · gemini-3.5-flash-lite)"]
+        S_Apprise["apprise<br/>(Statutory Notice: Candidate canons → Applicable Canons)"]
+    end
+
     subgraph HeuristicCascade ["The Heuristic Cascade (AI-Driven · Positive Polarity ≥ 0.5 Threshold)"]
         S5["docket<br/>(Macro Triage: Candidate canons → Active Cases)"] --> S6["admit<br/>(Micro Triage: Target files/diff hunks → Admitted Exhibits)"]
         S6 --> S7["audit<br/>(Adjudication: Single-trial evaluation of Exhibits vs. Statute)"]
@@ -68,6 +75,8 @@ flowchart TD
 
     S3 --> S5
     S4 --> S5
+    S3 --> S_Apprise
+    S4 --> S_Apprise
 
     S7 --> FinalRecord["Final Caseload Record<br/>(Decree / Verdict, Line Annotations, Evidentiary Audit Trail)"]
 ```
@@ -104,7 +113,7 @@ flowchart TD
 
 ### The Domain Packages (The Hexagon Core)
 - **`@canon-clerk/schema` (`packages/schema`):** Zero runtime dependencies. Defines the canonical TypeScript types for canons, frontmatter, ASTs, and the cumulative `Caseload` state container.
-- **`@canon-clerk/core` (`packages/core`):** Depends strictly on `schema`. Houses pure functional implementations of all evaluation stages (`executeIntake`, `executeDiscover`, `executeValidate`, `executeDocket`, `executeAdmit`, `executeAudit`), DAG scheduling algorithms, prompt assembly, and trie-constrained decoding schemas. It has no dependencies on CLI flags, stdout formatting, or GitHub Actions.
+- **`@canon-clerk/core` (`packages/core`):** Depends strictly on `schema`. Houses pure functional implementations of all evaluation stages (`executeIntake`, `executeDiscover`, `executeValidate`, `executeDocket`, `executeAdmit`, `executeAudit`, `executeApprise`), DAG scheduling algorithms, prompt assembly, and trie-constrained decoding schemas. It has no dependencies on CLI flags, stdout formatting, or GitHub Actions.
 - **`@canon-clerk/configuration` (`packages/configuration`):** Depends on `core`. Discovers workspace and user settings, resolves API credentials, and implements the diagnostic `probe` provider health check.
 
 ### The Driving Adapters (The External Ports)
@@ -120,22 +129,25 @@ Grounding AI evaluation in the cognitive and procedural division of labor of a c
 
 | Node / Imperative Verb | Core Concept | Metric Pair | Question Answered | Gate / Verdict Threshold |
 | :--- | :--- | :--- | :--- | :--- |
+| **`apprise`** | **Statutory Apprisal** *(Procedural Notice)* | `apprisalScore`<br/>`apprisalSummary` | *"Given this prospective design intent and target scope, does this canon have a colorable claim of jurisdiction over the planned work?"* | `score >= 0.5` $\implies$ Marked **Applicable** |
 | **`docket`** | **Colorability** *(Subject-Matter Jurisdiction)* | `colorabilityScore`<br/>`colorabilitySummary` | *"Does this candidate canon have a colorable claim of jurisdiction over this PR as a whole?"* | `score >= 0.5` $\implies$ Opened as an **Active Case** |
 | **`admit`** | **Admissibility** *(Relevance of Evidence)* | `admissibilityScore`<br/>`admissibilitySummary` | *"For an active Case, is this specific file/diff hunk admissible as relevant evidence?"* | `score >= 0.5` $\implies$ Admitted as an **Exhibit** |
 | **`audit`** | **Compliance** *(Substantive Merits)* | `complianceScore`<br/>`complianceSummary` | *"Given the admitted exhibits and governing invariant/exceptions, does the change comply with canon statute?"* | `score >= 0.5` $\implies$ **Compliant** (`pass`) 🟢<br/>`score < 0.5` $\implies$ **Violation** (`fail`) 🔴 |
 
 ### The Court Clerkship Taxonomy
 - **The Caseload:** The cumulative lifecycle container for the evaluation run.
+- **Statutory Apprisal (`apprise`):** Procedural notice issued by the clerk apprising parties of governing statutes pertaining to prospective design intent before implementation begins.
 - **Candidate Canons:** Rules whose declared `exists:` state preconditions match the Target File Tree, and whose `triggers:` or `inspect:` planes match in-flight exhibits during `discover` (subject to monorepo Scope Containment).
 - **Cases:** Canons that pass macro triage during `docket` and enter the Active Docket.
 - **Exhibits (The Unified Evidence Lifecycle):**
-  - **Tendered Exhibits (`intake`):** Raw filing inputs, including literal text metadata (`pr_title`, `pr_body`, `commit_messages`, `linked_issues`), diff streams (`diff`), and target file discovery directives.
+  - **Tendered Exhibits (`intake`):** Raw filing inputs, including literal text metadata (`pr_title`, `pr_body`, `commit_messages`, `linked_issues`), diff streams (`diff`), prospective design intent (`--intent`), and target file discovery directives.
   - **Candidate Exhibits (`discover`):** Materialized exhibits retained after mutual pruning with candidate canons (dropping un-inspected exhibits to preserve token hygiene).
   - **Admitted Exhibits (`admit`):** Exhibits formally admitted as relevant evidence for a specific Case on the docket (`admissibilityScore >= 0.5`).
 - **Trial / Decree:** The isolated prompt turn and final adjudication rendered during `audit` per Case against its admitted exhibits.
 
 ### Positive Polarity Consistency
-All three heuristic metrics share an identical polarity convention: **a higher score reflects the affirmative presence of the named property**:
+All heuristic metrics share an identical polarity convention: **a higher score reflects the affirmative presence of the named property**:
+- **`apprise` (High Apprisal):** Affirmative jurisdiction $\implies$ canon marked applicable (`score >= 0.5`).
 - **`docket` (High Colorability):** Affirmative jurisdiction $\implies$ canon opened as an active Case.
 - **`admit` (High Admissibility):** Affirmative relevance $\implies$ file/hunk admitted as an Exhibit for that Case.
 - **`audit` (High Compliance):** Affirmative adherence $\implies$ change complies with canon statute and passes review (`score >= 0.5`).
@@ -151,6 +163,7 @@ All three heuristic metrics share an identical polarity convention: **a higher s
 | `validate` | Branch A (Filing) | Deterministic | 0 tokens, ~12ms | 0 syntax errors; fails fast (code 1) on lint error |
 | `configure` | Branch B (Env) | Deterministic | 0 tokens, <5ms | Valid config; fails fast (code 2) on missing keys |
 | `probe` | Diagnostic Leaf | Network probe | 0 tokens, variable | Endpoint reachable; fails fast (code 2) on failure |
+| `apprise` | Apprisal Track | Flash-Lite AI | ~400ms, low $ | `apprisalScore >= 0.5`; exits 0 if candidates empty |
 | `docket` | Cascade Spine | Flash-Lite AI | ~400ms, low $ | `colorabilityScore >= 0.5`; exits 0 if docket empty |
 | `admit` | Cascade Spine | Flash-Lite AI | ~600ms, low $ | `admissibilityScore >= 0.5`; exits 0 if no exhibits |
 | `audit` | Cascade Spine | Pro Reasoning | ~2.5s, targeted | `complianceScore >= 0.5` $\implies$ pass (0), else fail (1) |
@@ -198,284 +211,65 @@ flowchart TD
 
 ---
 
-## 7. The Canonical `Caseload` Schema
+## 7. The Cumulative `Caseload` State Container
 
-The formal TypeScript data structures defining the cumulative `Caseload`:
+The `Caseload` is the central, immutable data envelope flowing through the pipeline. Rather than passing disjoint arguments between commands, each stage reads accumulated upstream state and enriches its own dedicated namespace on the shared `Caseload` object.
+
+The formal TypeScript types are maintained in `@canon-clerk/schema` ([`packages/schema`](../../packages/schema) and [`openspec/specs/schema/spec.md`](../../openspec/specs/schema/spec.md)), and granular payload schemas are specified in each node's architectural document.
+
+### The Top-Level `Caseload` Envelope
 
 ```ts
-export interface CaseloadIntake {
-  /** PR title or commit subject */
-  readonly pr_title?: string | undefined;
-
-  /** PR markdown description or commit body */
-  readonly pr_body?: string | undefined;
-
-  /** Scope of intake targets */
-  readonly scope?: 'targeted' | 'all-targets' | undefined;
-
-  /** Ingested code modifications keyed by relative repository path */
-  readonly diffs: Record<string, FileArtifact>;
-}
-
-export interface CaseloadDiscovery {
-  /** Mode of discovery: trigger-filtered or full corpus */
-  readonly mode?: 'triggered' | 'all-canons' | undefined;
-
-  /** Modified target file paths evaluated */
-  readonly targetFiles: readonly string[];
-
-  /** Discovered candidate canon paths matching targets (or full corpus) */
-  readonly candidateCanons: readonly string[];
-
-  /** Materialized active exhibits retained after mutual pruning with candidate canons */
-  readonly activeExhibits: {
-    readonly files: readonly string[];
-    readonly prTitle?: boolean | undefined;
-    readonly prBody?: boolean | undefined;
-    readonly commitMessages?: boolean | undefined;
-    readonly linkedIssues?: boolean | undefined;
-  };
-
-  /** Map of canon paths to matched target file paths */
-  readonly triggersJoin: Record<string, readonly string[]>;
-}
-
-export interface CaseloadValidation {
-  /** Map of canon paths to AST/schema validation metadata */
-  readonly results: Record<string, ValidatedCanonMetadata>;
-
-  /** True if any candidate canon contains lint errors */
-  readonly hasErrors: boolean;
-}
-
-export interface CaseloadConfig {
-  /** Model specifier for screening nodes (e.g. 'google:gemini-3.5-flash-lite') */
-  readonly screenerModel: string;
-
-  /** Model specifier for adjudication (e.g. 'google:gemini-3.8-pro') */
-  readonly auditorModel: string;
-
-  /** Workspace root directory */
-  readonly cwd: string;
-
-  /** Optional reasoning budget in tokens */
-  readonly reasoningBudget?: number | undefined;
-}
-
-export interface ProbeEndpointResult {
-  /** Connection outcome */
-  readonly status: 'ok' | 'error';
-
-  /** Roundtrip response latency in milliseconds */
-  readonly latencyMs: number;
-
-  /** Resolved model identifier probed */
-  readonly model: string;
-
-  /** Error message if connectivity failed */
-  readonly error?: string | undefined;
-}
-
-export interface CaseloadProbe {
-  /** Screener model endpoint probe result */
-  readonly screener: ProbeEndpointResult;
-
-  /** Auditor model endpoint probe result */
-  readonly auditor: ProbeEndpointResult;
-}
-
-export interface ColorabilityAssessment {
-  /** Numerical score indicating colorable subject-matter jurisdiction [0.0, 1.0] */
-  readonly colorabilityScore: number;
-
-  /** Reasoning justifying whether jurisdiction applies to the PR context */
-  readonly colorabilitySummary: string;
-
-  /** Status outcome */
-  readonly status: 'docketed' | 'dismissed';
-}
-
-export interface CaseloadDocket {
-  /** Colorability assessments keyed by canon path */
-  readonly cases: Record<string, ColorabilityAssessment>;
-
-  /** List of canon paths admitted onto the Active Docket */
-  readonly activeDocket: readonly string[];
-
-  /** Optional diagnostic anomalies manifest */
-  readonly anomalies?: DocketAnomaliesManifest | undefined;
-}
-
-export interface AdmittedExhibit {
-  /** Repository-relative path to admitted file or exhibit */
-  readonly filePath: string;
-
-  /** Relevance score of exhibit to governing canon [0.0, 1.0] */
-  readonly admissibilityScore: number;
-
-  /** Rationale for admitting exhibit into evidence */
-  readonly admissibilitySummary: string;
-}
-
-export interface CanonEvidenceExhibits {
-  /** Canon file path governing these exhibits */
-  readonly canonPath: string;
-
-  /** Admitted evidence exhibits */
-  readonly exhibits: readonly AdmittedExhibit[];
-}
-
-export interface CaseloadEvidence {
-  /** Admitted exhibits keyed by canon path */
-  readonly exhibits: Record<string, CanonEvidenceExhibits>;
-}
-
-export interface CanonAdjudication {
-  /** Canon file path evaluated */
-  readonly canonPath: string;
-
-  /** Compliance score indicating statute adherence [0.0, 1.0] */
-  readonly complianceScore: number;
-
-  /** Substantive decree explaining compliance or violation */
-  readonly complianceSummary: string;
-
-  /** Verdict status */
-  readonly status: 'pass' | 'fail';
-
-  /** Line-level code annotations */
-  readonly annotations: readonly CodeAnnotation[];
-}
-
-export interface CaseloadVerdict {
-  /** Overall review gate outcome */
-  readonly status: 'pass' | 'fail';
-
-  /** High-level verdict summary */
-  readonly summary: string;
-
-  /** Substantive adjudications per active case */
-  readonly adjudications: readonly CanonAdjudication[];
-}
-
 export interface Caseload {
   /** Schema specification version */
   readonly version: '1.0';
 
-  /** Intake: Change diffs (FileArtifacts), target paths, and PR/commit metadata */
+  /** Intake: Change diffs (FileArtifacts), target paths, prospective intent, or PR metadata */
   readonly intake?: CaseloadIntake | undefined;
 
-  /** Discovery: Target paths, candidate canons, and trigger intersections */
+  /** Discovery: Matched target paths, candidate canons, and trigger intersections */
   readonly discovery?: CaseloadDiscovery | undefined;
 
-  /** Validation: Candidate canons syntax and frontmatter validation */
+  /** Validation: Candidate canons syntax and frontmatter AST validation results */
   readonly validation?: CaseloadValidation | undefined;
 
-  /** Configuration: Verified configuration and model settings */
+  /** Configuration: Resolved workspace paths, provider credentials, and model specifiers */
   readonly config?: CaseloadConfig | undefined;
 
-  /** Probe (Diagnostic Leaf): Live provider connectivity probe results */
+  /** Probe (Diagnostic Leaf): Live provider connectivity and latency test results */
   readonly probe?: CaseloadProbe | undefined;
 
-  /** Docket (Macro Triage): Macro triage assessments (Active Cases on Docket) */
+  /** Apprisal (Statutory Notice): Prospective applicability assessments against design intent */
+  readonly apprisal?: CaseloadApprisal | undefined;
+
+  /** Docket (Macro Triage): Colorability assessments and active cases admitted to docket */
   readonly docket?: CaseloadDocket | undefined;
 
-  /** Admissibility (Micro Triage): Micro triage evidence admissibility (Admitted Exhibits per Case) */
+  /** Evidence (Micro Triage): Admitted exhibits and relevance scores per active case */
   readonly evidence?: CaseloadEvidence | undefined;
 
-  /** Audit (Adjudication): Substantive verdicts and line annotations */
+  /** Verdict (Adjudication): Substantive compliance decrees and line annotations */
   readonly verdict?: CaseloadVerdict | undefined;
 }
 ```
 
-### Concrete Schema Exemplar (Post-Audit Terminal State)
+### Stage Payloads & Authoritative Specifications
 
-```json
-{
-  "version": "1.0",
-  "intake": {
-    "pr_title": "feat(cli): add docket subcommand",
-    "diffs": {
-      "packages/cli/src/commands/docket.ts": {
-        "path": "packages/cli/src/commands/docket.ts",
-        "status": "added",
-        "linesAdded": 240,
-        "linesDeleted": 0,
-        "patch": "@@ -0,0 +1,240 @@\n+..."
-      }
-    }
-  },
-  "discovery": {
-    "targetFiles": [
-      "packages/cli/src/commands/docket.ts"
-    ],
-    "candidateCanons": [
-      ".canons/cli/cli-flags-must-use-positive-polarity.md"
-    ],
-    "triggersJoin": {
-      ".canons/cli/cli-flags-must-use-positive-polarity.md": [
-        "packages/cli/src/commands/docket.ts"
-      ]
-    }
-  },
-  "validation": {
-    "results": {
-      ".canons/cli/cli-flags-must-use-positive-polarity.md": {
-        "result": "pass",
-        "warningCount": 0,
-        "warnings": [],
-        "errorCount": 0,
-        "errors": []
-      }
-    },
-    "hasErrors": false
-  },
-  "config": {
-    "screenerModel": "google:gemini-3.5-flash-lite",
-    "auditorModel": "google:gemini-3.8-pro",
-    "cwd": "/workspace/canon-clerk"
-  },
-  "docket": {
-    "cases": {
-      ".canons/cli/cli-flags-must-use-positive-polarity.md": {
-        "colorabilityScore": 0.95,
-        "colorabilitySummary": "PR introduces new CLI command flags in packages/cli/src/commands/docket.ts.",
-        "status": "docketed"
-      }
-    },
-    "activeDocket": [
-      ".canons/cli/cli-flags-must-use-positive-polarity.md"
-    ]
-  },
-  "evidence": {
-    "exhibits": {
-      ".canons/cli/cli-flags-must-use-positive-polarity.md": {
-        "canonPath": ".canons/cli/cli-flags-must-use-positive-polarity.md",
-        "exhibits": [
-          {
-            "filePath": "packages/cli/src/commands/docket.ts",
-            "admissibilityScore": 0.95,
-            "admissibilitySummary": "Contains option definitions for new CLI command."
-          }
-        ]
-      }
-    }
-  },
-  "verdict": {
-    "summary": "1 case evaluated, 1 passed, 0 violations.",
-    "status": "pass",
-    "adjudications": [
-      {
-        "canonPath": ".canons/cli/cli-flags-must-use-positive-polarity.md",
-        "complianceScore": 1.0,
-        "complianceSummary": "All flags define positive polarity with Commander-managed negative inversions.",
-        "status": "pass",
-        "annotations": []
-      }
-    ]
-  }
-}
-```
+Each pipeline stage owns a dedicated, non-overlapping field on the cumulative `Caseload`:
+
+| Field on `Caseload` | Enriched By | Track | Payload Summary | Authoritative Specification |
+| :--- | :--- | :--- | :--- | :--- |
+| `.intake` | `intake` | Branch A (Filing) | Tendered exhibits: diff hunks, target paths, PR metadata, or intent queries | [`nodes/intake.md`](nodes/intake.md#caseload-delta) |
+| `.discovery` | `discover` | Branch A (Filing) | Candidate canons matching path triggers & target file intersections | [`nodes/discover.md`](nodes/discover.md#caseload-delta) |
+| `.validation` | `validate` | Branch A (Filing) | Deterministic AST linting and frontmatter schema validation results | [`nodes/validate.md`](nodes/validate.md#caseload-delta) |
+| `.config` | `configure` | Branch B (Env) | Workspace root, resolved screener/auditor model specifiers, reasoning budget | [`nodes/configure.md`](nodes/configure.md#caseload-delta) |
+| `.probe` | `probe` | Diagnostic Leaf | Live endpoint reachability, roundtrip latency (ms), and resolved models | [`nodes/probe.md`](nodes/probe.md#caseload-delta) |
+| `.apprisal` | `apprise` | Apprisal Track | Prospective statutory jurisdiction assessments (`apprisalScore`, `apprisalSummary`) | [`nodes/apprise.md`](nodes/apprise.md#caseload-delta) |
+| `.docket` | `docket` | Dispute Spine | Macro triage colorability assessments and list of opened active cases | [`nodes/docket.md`](nodes/docket.md#caseload-delta) |
+| `.evidence` | `admit` | Dispute Spine | Micro triage evidence admissibility: admitted file exhibits per active case | [`nodes/admit.md`](nodes/admit.md#caseload-delta) |
+| `.verdict` | `audit` | Dispute Spine | Final substantive adjudications, compliance scores, decrees, and line annotations | [`nodes/audit.md`](nodes/audit.md#caseload-delta) |
+
+Downstream subcommands fast-forward across any stage whose corresponding namespace is already populated on an incoming `Caseload` (via `--caseload <path|->`).
 
 ---
 
