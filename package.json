@@ -1,41 +1,14 @@
 {
-  "name": "canon-clerk-monorepo",
+  "name": "canon-clerk",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": "^24.0.0"
-  },
-  "workspaces": [
-    "packages/*"
-  ],
   "scripts": {
-    "build": "tsup",
-    "postbuild": "npm rebuild canon-clerk",
-    "test": "vitest run --exclude 'packages/integration-tests-private/**'",
-    "test:integration": "vitest run packages/integration-tests-private",
-    "dev": "vitest",
-    "clean": "rm -rf node_modules packages/*/dist packages/*/node_modules",
-    "bump": "npm version --workspaces --include-workspace-root",
-    "typecheck": "tsc --noEmit",
-    "lint:lockfile": "lockfile-lint --path package-lock.json --validate-https --allowed-hosts npm",
-    "lint:specs": "openspec validate --all --strict",
-    "check": "concurrently --kill-others-on-fail --timings -p \"[{name}] \" -n \"lockfile,specs,typecheck,build,test\" -c \"blue,magenta,cyan,green,yellow\" \"npm run lint:lockfile\" \"npm run lint:specs\" \"npm run typecheck\" \"npm run build\" \"npm test\"",
-    "precli": "npm run build",
-    "cli": "canon-clerk",
-    "settings:check": "npm run check -w packages/repo-settings-private",
-    "settings:sync": "npm run sync -w packages/repo-settings-private",
     "openspec": "openspec",
     "opsx": "openspec"
   },
   "license": "Apache-2.0",
   "devDependencies": {
-    "@fission-ai/openspec": "^1.13.2",
-    "@types/node": "^24.0.9",
-    "concurrently": "^10.0.5",
-    "lockfile-lint": "^4.14.1",
-    "tsup": "^8.5.0",
-    "typescript": "^5.9.3",
-    "vitest": "^5.0.2"
+    "@fission-ai/openspec": "^1.13.2"
   }
 }

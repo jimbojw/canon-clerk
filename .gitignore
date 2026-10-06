@@ -5,6 +5,7 @@ node_modules/
 # Build outputs
 dist/
 *.tsbuildinfo
+target/
 
 # Environment variables & local credentials
 .env
@@ -18,3 +19,8 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+
+# Added by cargo
+
+/target
