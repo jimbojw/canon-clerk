@@ -402,7 +402,15 @@ fn resolve_diff(diff_file: Option<PathBuf>) -> Result<String, Box<dyn std::error
         }
     }
 
-    // Check diff against merge-base with upstream
+    // Fallback to previous commit diff (most recent commit)
+    if let Ok(output) = std::process::Command::new("git").args(["diff", "HEAD~1"]).output() {
+        let diff_str = String::from_utf8_lossy(&output.stdout).to_string();
+        if !diff_str.trim().is_empty() {
+            return Ok(diff_str);
+        }
+    }
+
+    // Fallback to diff against merge-base with upstream (entire branch changes)
     if let Ok(output) = std::process::Command::new("git")
         .args(["merge-base", "HEAD", "@{upstream}"])
         .output()
@@ -418,14 +426,6 @@ fn resolve_diff(diff_file: Option<PathBuf>) -> Result<String, Box<dyn std::error
                     return Ok(diff_str);
                 }
             }
-        }
-    }
-
-    // Fallback to previous commit diff
-    if let Ok(output) = std::process::Command::new("git").args(["diff", "HEAD~1"]).output() {
-        let diff_str = String::from_utf8_lossy(&output.stdout).to_string();
-        if !diff_str.trim().is_empty() {
-            return Ok(diff_str);
         }
     }
 
