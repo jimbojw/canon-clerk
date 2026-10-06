@@ -154,3 +154,4 @@ mod tests {
         assert_eq!(resolved.credentials.api_key.as_deref(), Some("cli-key"));
     }
 }
+

@@ -46,3 +46,4 @@ The system SHALL probe provider reachability using configurable HTTP or mock cli
 #### Scenario: Mock provider probe
 - **WHEN** a probe is executed against the mock provider
 - **THEN** probe returns a healthy ping response and diagnostic latency.
+

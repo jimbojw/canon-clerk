@@ -37,3 +37,4 @@ Migrating from TypeScript to Rust promises sub-millisecond CLI pre-flight, zero-
 ## Risks / Trade-offs
 - **Serde YAML status:** The `serde_yaml` crate is deprecated upstream, but remains the standard YAML parser in Rust. For this baseline spike it is sufficient and well-tested.
 - **Diff parsing edge cases:** Parsing arbitrary unified diffs can be tricky. A dedicated parser in `intake` handles standard `diff --git`, `---`, `+++`, and `@@` chunk headers.
+

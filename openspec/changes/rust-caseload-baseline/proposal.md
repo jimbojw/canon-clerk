@@ -25,3 +25,4 @@ None.
 - Replaces TypeScript/Node.js monorepo runtime with a compiled, single-binary Rust implementation.
 - Preserves the repository's OpenSpec spec-driven cycle.
 - Eliminates Node.js runtime startup overhead for CLI pre-flight.
+

@@ -118,3 +118,4 @@ mod tests {
         assert_eq!(result.message.as_deref(), Some("API key expired"));
     }
 }
+

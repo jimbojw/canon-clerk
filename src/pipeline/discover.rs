@@ -107,3 +107,4 @@ mod tests {
         assert_eq!(active, vec!["markdown-rules"]);
     }
 }
+

@@ -15,7 +15,7 @@
 - [x] 3.2 Implement `probe` module and `MockProviderClient` for offline provider ping with unit tests
 
 ## 4. CLI Entrypoint & Benchmarks
-- [ ] 4.1 Implement `clap`-based CLI in `src/main.rs` exposing `validate` subcommand and `--help`
-- [ ] 4.2 Benchmark cold start latency and binary size
-- [ ] 4.3 Run full test suite and validation check
+- [x] 4.1 Implement `clap`-based CLI in `src/main.rs` exposing `validate` subcommand and `--help`
+- [x] 4.2 Benchmark cold start latency and binary size
+- [x] 4.3 Run full test suite and validation check
 

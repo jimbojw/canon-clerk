@@ -138,3 +138,4 @@ deleted file mode 100644
         assert_eq!(artifacts[1].change_type, ChangeType::Deleted);
     }
 }
+
