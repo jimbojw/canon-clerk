@@ -17,15 +17,16 @@ Starting from a clean slate after pruning the existing TypeScript/Vitest monorep
 3. Implemented deterministic Branch A (Filing) pipelines (`intake`, `discover`, `validate`).
 4. Implemented Branch B (Environment/Probe) pipelines (`configure`, `config_store`, `probe`) reading user credentials from `~/.config/canon-clerk/config.json`.
 5. Implemented the complete Phase 2/3 **Heuristic Cascade DAG** (`docket` $\to$ `admit` $\to$ `audit`) with positive-polarity scoring ($\ge 0.5$) and structured JSON decoding using live Google Gemini (`gemini-3.8-flash`).
-6. Delivered an ergonomic `clap`-based CLI with subcommands: `validate`, `probe`, `docket`, `admit`, `audit`.
+6. Delivered an ergonomic `clap`-based CLI with subcommands: `validate`, `probe`, `docket`, `admit`, `audit`, and `apprise`.
 
 The resulting Rust implementation achieved:
 - **~40x–70x faster CLI cold start** (13 ms vs. 400–1000 ms in Node.js).
 - **~50x faster repository canon validation** (27–44 ms to parse ASTs and validate 118 canons vs. 1.2–2.5 s in Node.js).
 - **Live Google Generative AI integration** via typed `reqwest` client, fully verified end-to-end against live Gemini models.
 - **Autonomous Dogfooding Verification**: The audit pipeline genuinely falsified a violation in its own Rust CLI codebase (`cli-output-commands-must-support-json.md`), exited 1, and upon remediation, rendered a 1.00 PASS verdict (exit 0).
+- **Prospective Statutory Apprisal Authority (`apprise`)**: Enforces naked invocation guards (exit 2), zero-candidate short-circuits (exit 0 without LLM calls), and reason-first screening of design intent before code is authored.
 - **~98% reduction in runtime footprint** (single self-contained 3.8 MB binary vs. Node.js runtime + >200 MB `node_modules`).
-- **Sub-second test turnaround** (31 unit tests + 1 integration test passing in 0.01s).
+- **Sub-second test turnaround** (36 unit tests + 1 integration test passing in 0.01s).
 
 ---
 
