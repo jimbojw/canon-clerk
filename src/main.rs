@@ -1,11 +1,12 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use canon_clerk::models::Caseload;
+use canon_clerk::models::{CanonAst, Caseload, FileArtifact};
 use canon_clerk::pipeline::{
-    AnyProviderClient, ConfigResolver, Discover, GoogleProviderClient, Intake, MockProviderClient,
-    ProbeStatus, ProviderClient, ProviderType, Validate,
+    AdmitRunner, AnyProviderClient, AuditRunner, ConfigResolver, Discover, DocketRunner,
+    GoogleProviderClient, Intake, MockProviderClient, ProbeStatus, ProviderClient, ProviderType,
+    Validate,
 };
 
 #[derive(Parser, Debug)]
@@ -31,6 +32,15 @@ enum Commands {
 
     #[command(about = "Probe LLM provider connectivity")]
     Probe(ProbeArgs),
+
+    #[command(about = "Perform Phase 2 macro triage docketing of candidate canons")]
+    Docket(DocketArgs),
+
+    #[command(about = "Perform Phase 2 micro triage exhibit admissibility")]
+    Admit(AdmitArgs),
+
+    #[command(about = "Execute full end-to-end Caseload DAG adjudication audit")]
+    Audit(AuditArgs),
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -50,6 +60,9 @@ struct ValidateArgs {
     #[arg(long, help = "Optional diff file to intake for trigger evaluation")]
     diff_file: Option<PathBuf>,
 
+    #[arg(long, help = "Output unadorned JSON to stdout")]
+    json: bool,
+
     #[arg(
         long,
         value_enum,
@@ -66,6 +79,96 @@ struct ProbeArgs {
 
     #[arg(long, help = "Model name override")]
     model: Option<String>,
+
+    #[arg(long, help = "Output unadorned JSON to stdout")]
+    json: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value = "human",
+        help = "Output formatting"
+    )]
+    format: OutputFormat,
+}
+
+#[derive(Args, Debug)]
+struct DocketArgs {
+    #[arg(
+        default_value = ".canons",
+        help = "Path to canon file or directory to evaluate"
+    )]
+    path: PathBuf,
+
+    #[arg(long, help = "Optional diff file to intake (reads stdin or git diff if not specified)")]
+    diff_file: Option<PathBuf>,
+
+    #[arg(long, help = "Use offline mock provider")]
+    mock: bool,
+
+    #[arg(long, help = "Model name override")]
+    model: Option<String>,
+
+    #[arg(long, help = "Output unadorned JSON to stdout")]
+    json: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value = "human",
+        help = "Output formatting"
+    )]
+    format: OutputFormat,
+}
+
+#[derive(Args, Debug)]
+struct AdmitArgs {
+    #[arg(
+        default_value = ".canons",
+        help = "Path to canon file or directory to evaluate"
+    )]
+    path: PathBuf,
+
+    #[arg(long, help = "Optional diff file to intake (reads stdin or git diff if not specified)")]
+    diff_file: Option<PathBuf>,
+
+    #[arg(long, help = "Use offline mock provider")]
+    mock: bool,
+
+    #[arg(long, help = "Model name override")]
+    model: Option<String>,
+
+    #[arg(long, help = "Output unadorned JSON to stdout")]
+    json: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value = "human",
+        help = "Output formatting"
+    )]
+    format: OutputFormat,
+}
+
+#[derive(Args, Debug)]
+struct AuditArgs {
+    #[arg(
+        default_value = ".canons",
+        help = "Path to canon file or directory to evaluate"
+    )]
+    path: PathBuf,
+
+    #[arg(long, help = "Optional diff file to intake (reads stdin or git diff if not specified)")]
+    diff_file: Option<PathBuf>,
+
+    #[arg(long, help = "Use offline mock provider")]
+    mock: bool,
+
+    #[arg(long, help = "Model name override")]
+    model: Option<String>,
+
+    #[arg(long, help = "Output unadorned JSON to stdout")]
+    json: bool,
 
     #[arg(
         long,
@@ -95,6 +198,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Some(Commands::Validate(args)) => run_validate(args),
         Some(Commands::Probe(args)) => run_probe(args).await,
+        Some(Commands::Docket(args)) => run_docket(args).await,
+        Some(Commands::Admit(args)) => run_admit(args).await,
+        Some(Commands::Audit(args)) => run_audit(args).await,
         None => {
             use clap::CommandFactory;
             Cli::command().print_help()?;
@@ -146,7 +252,13 @@ fn run_validate(args: ValidateArgs) -> Result<(), Box<dyn std::error::Error>> {
         caseload.activate_canon(id);
     }
 
-    match args.format {
+    let format = if args.json {
+        OutputFormat::Json
+    } else {
+        args.format
+    };
+
+    match format {
         OutputFormat::Json => {
             let json = serde_json::to_string_pretty(&serde_json::json!({
                 "valid": errors.is_empty(),
@@ -177,33 +289,33 @@ fn run_validate(args: ValidateArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_probe(args: ProbeArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn resolve_client(mock: bool, model: Option<String>) -> Result<AnyProviderClient, Box<dyn std::error::Error>> {
     let env_vars: std::collections::HashMap<String, String> = std::env::vars().collect();
     let resolved = ConfigResolver::resolve(
-        if args.mock {
+        if mock {
             Some(ProviderType::Mock)
         } else {
             None
         },
-        args.model,
+        model,
         None,
         &env_vars,
     );
 
-    let client = if args.mock || resolved.model.provider == ProviderType::Mock {
-        AnyProviderClient::Mock(MockProviderClient::new_healthy(
+    if mock || resolved.model.provider == ProviderType::Mock {
+        Ok(AnyProviderClient::Mock(MockProviderClient::new_healthy(
             format!("{}", resolved.model.provider),
             resolved.model.model_name.clone(),
-        ))
+        )))
     } else {
         match resolved.model.provider {
             ProviderType::Gemini => {
                 if let Some(key) = resolved.credentials.api_key {
-                    AnyProviderClient::Google(GoogleProviderClient::new(
+                    Ok(AnyProviderClient::Google(GoogleProviderClient::new(
                         key,
                         resolved.credentials.api_endpoint,
                         resolved.model.model_name.clone(),
-                    ))
+                    )))
                 } else {
                     eprintln!("Error: Missing API key for Google Gemini provider.");
                     eprintln!("Please configure it in ~/.config/canon-clerk/config.json (.providers.google.apiKey) or export GEMINI_API_KEY.");
@@ -211,15 +323,83 @@ async fn run_probe(args: ProbeArgs) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             other => {
-                eprintln!("Error: Provider '{}' live probe not yet configured. Use --mock or configure Google Gemini.", other);
+                eprintln!("Error: Provider '{}' live client not configured. Use --mock or configure Google Gemini.", other);
                 std::process::exit(1);
             }
         }
+    }
+}
+
+fn resolve_diff(diff_file: Option<PathBuf>) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(diff_path) = diff_file {
+        if diff_path.exists() {
+            return Ok(std::fs::read_to_string(diff_path)?);
+        } else {
+            return Err(format!("Diff file not found: {}", diff_path.display()).into());
+        }
+    }
+
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        use std::io::Read;
+        let mut buffer = String::new();
+        std::io::stdin().read_to_string(&mut buffer)?;
+        if !buffer.trim().is_empty() {
+            return Ok(buffer);
+        }
+    }
+
+    if let Ok(output) = std::process::Command::new("git").args(["diff", "HEAD~1"]).output() {
+        let diff_str = String::from_utf8_lossy(&output.stdout).to_string();
+        if !diff_str.trim().is_empty() {
+            return Ok(diff_str);
+        }
+    }
+
+    if let Ok(output) = std::process::Command::new("git").args(["diff"]).output() {
+        let diff_str = String::from_utf8_lossy(&output.stdout).to_string();
+        if !diff_str.trim().is_empty() {
+            return Ok(diff_str);
+        }
+    }
+
+    Ok(String::new())
+}
+
+fn load_canons(path: &Path) -> Result<Vec<CanonAst>, Box<dyn std::error::Error>> {
+    let canon_paths = if path.is_file() {
+        vec![path.to_path_buf()]
+    } else if path.is_dir() {
+        let mut paths = Vec::new();
+        collect_canons_recursive(path, &mut paths)?;
+        paths.sort();
+        paths
+    } else {
+        Vec::new()
     };
 
+    let mut canons = Vec::new();
+    for cp in &canon_paths {
+        let content = std::fs::read_to_string(cp)?;
+        let path_str = cp.to_string_lossy();
+        if let Ok(ast) = Validate::parse_and_validate(&path_str, &content) {
+            canons.push(ast);
+        }
+    }
+    Ok(canons)
+}
+
+async fn run_probe(args: ProbeArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let client = resolve_client(args.mock, args.model)?;
     let probe_result = client.probe().await?;
 
-    match args.format {
+    let format = if args.json {
+        OutputFormat::Json
+    } else {
+        args.format
+    };
+
+    match format {
         OutputFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&probe_result)?);
         }
@@ -242,8 +422,267 @@ async fn run_probe(args: ProbeArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn run_docket(args: DocketArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let diff_text = resolve_diff(args.diff_file)?;
+    let client = resolve_client(args.mock, args.model)?;
+    let canons = load_canons(&args.path)?;
+
+    let artifacts = Intake::ingest_diff(&diff_text);
+
+    let candidate_canons: Vec<&CanonAst> = if !artifacts.is_empty() {
+        let active_ids = Discover::discover_active_canons(&canons, &artifacts);
+        let filtered: Vec<&CanonAst> = canons
+            .iter()
+            .filter(|c| active_ids.contains(&c.canon_id()))
+            .collect();
+        if filtered.is_empty() {
+            canons.iter().collect()
+        } else {
+            filtered
+        }
+    } else {
+        canons.iter().collect()
+    };
+
+    let diff_summary = if diff_text.is_empty() {
+        "(No diff provided; evaluating overall repository context)".to_string()
+    } else {
+        diff_text.lines().take(150).collect::<Vec<&str>>().join("\n")
+    };
+
+    let assessments = DocketRunner::execute_docket(&candidate_canons, &diff_summary, &client).await?;
+    let docketed_count = assessments.iter().filter(|a| a.is_docketed()).count();
+
+    let format = if args.json {
+        OutputFormat::Json
+    } else {
+        args.format
+    };
+
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "total_evaluated": assessments.len(),
+                "docketed_count": docketed_count,
+                "assessments": assessments,
+            }))?);
+        }
+        OutputFormat::Human => {
+            println!("=== Canon Clerk Docket Screening ===");
+            println!("Evaluated Canons: {}", assessments.len());
+            println!("Docketed:         {}", docketed_count);
+            println!("Dismissed:        {}", assessments.len() - docketed_count);
+            println!();
+
+            for a in &assessments {
+                let badge = if a.is_docketed() { "[DOCKETED]" } else { "[DISMISSED]" };
+                println!("{} {} (Score: {:.2})", badge, a.canon_path, a.colorability_score);
+                println!("    Summary: {}", a.colorability_summary);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_admit(args: AdmitArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let diff_text = resolve_diff(args.diff_file)?;
+    let client = resolve_client(args.mock, args.model)?;
+    let canons = load_canons(&args.path)?;
+
+    let artifacts = Intake::ingest_diff(&diff_text);
+    if artifacts.is_empty() {
+        println!("No file artifacts found in diff to evaluate for admissibility.");
+        return Ok(());
+    }
+
+    let diff_summary = diff_text.lines().take(150).collect::<Vec<&str>>().join("\n");
+    let candidate_canons: Vec<&CanonAst> = canons.iter().collect();
+
+    let assessments = DocketRunner::execute_docket(&candidate_canons, &diff_summary, &client).await?;
+    let docketed_paths: std::collections::HashSet<String> = assessments
+        .iter()
+        .filter(|a| a.is_docketed())
+        .map(|a| a.canon_path.clone())
+        .collect();
+
+    let docketed_canons: Vec<&CanonAst> = canons
+        .iter()
+        .filter(|c| docketed_paths.contains(&c.path))
+        .collect();
+
+    let artifact_refs: Vec<&FileArtifact> = artifacts.iter().collect();
+    let mut all_exhibits = Vec::new();
+
+    for canon in &docketed_canons {
+        let exhibits = AdmitRunner::execute_admit(canon, &artifact_refs, &client).await?;
+        all_exhibits.extend(exhibits);
+    }
+
+    let admitted_count = all_exhibits.iter().filter(|e| e.is_admitted()).count();
+
+    let format = if args.json {
+        OutputFormat::Json
+    } else {
+        args.format
+    };
+
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "docketed_canons": docketed_canons.len(),
+                "total_exhibits_evaluated": all_exhibits.len(),
+                "admitted_count": admitted_count,
+                "exhibits": all_exhibits,
+            }))?);
+        }
+        OutputFormat::Human => {
+            println!("=== Canon Clerk Exhibit Admissibility ===");
+            println!("Docketed Canons: {}", docketed_canons.len());
+            println!("Evaluated Files: {}", artifacts.len());
+            println!("Admitted:        {}", admitted_count);
+            println!("Excluded:        {}", all_exhibits.len() - admitted_count);
+            println!();
+
+            for e in &all_exhibits {
+                let badge = if e.is_admitted() { "[ADMITTED]" } else { "[EXCLUDED]" };
+                println!(
+                    "{} Canon: `{}` -> File: `{}` (Score: {:.2})",
+                    badge, e.canon_path, e.file_path, e.admissibility_score
+                );
+                println!("    Summary: {}", e.admissibility_summary);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_audit(args: AuditArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let diff_text = resolve_diff(args.diff_file)?;
+    let client = resolve_client(args.mock, args.model)?;
+    let canons = load_canons(&args.path)?;
+
+    let artifacts = Intake::ingest_diff(&diff_text);
+    if artifacts.is_empty() {
+        println!("No file artifacts found in diff to audit.");
+        return Ok(());
+    }
+
+    let diff_summary = diff_text.lines().take(150).collect::<Vec<&str>>().join("\n");
+    let candidate_canons: Vec<&CanonAst> = canons.iter().collect();
+
+    let assessments = DocketRunner::execute_docket(&candidate_canons, &diff_summary, &client).await?;
+    let docketed_paths: std::collections::HashSet<String> = assessments
+        .iter()
+        .filter(|a| a.is_docketed())
+        .map(|a| a.canon_path.clone())
+        .collect();
+
+    let docketed_canons: Vec<&CanonAst> = canons
+        .iter()
+        .filter(|c| docketed_paths.contains(&c.path))
+        .collect();
+
+    let format = if args.json {
+        OutputFormat::Json
+    } else {
+        args.format
+    };
+
+    if docketed_canons.is_empty() {
+        match format {
+            OutputFormat::Json => {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "is_passing": true,
+                    "summary": "No canons docketed for this change.",
+                    "adjudications": [],
+                }))?);
+            }
+            OutputFormat::Human => {
+                println!("=== Canon Clerk Audit Adjudication ===");
+                println!("No canons have active jurisdiction (all dismissed at docket).");
+                println!("Outcome: PASS (No applicable constraints violated)");
+            }
+        }
+        return Ok(());
+    }
+
+    let artifact_refs: Vec<&FileArtifact> = artifacts.iter().collect();
+    let mut adjudications = Vec::new();
+
+    for canon in &docketed_canons {
+        let exhibits = AdmitRunner::execute_admit(canon, &artifact_refs, &client).await?;
+        let admitted_paths: std::collections::HashSet<String> = exhibits
+            .iter()
+            .filter(|e| e.is_admitted())
+            .map(|e| e.file_path.clone())
+            .collect();
+
+        let admitted_artifacts: Vec<&FileArtifact> = artifacts
+            .iter()
+            .filter(|a| admitted_paths.contains(&a.path))
+            .collect();
+
+        if admitted_artifacts.is_empty() {
+            continue;
+        }
+
+        let adjudication = AuditRunner::execute_audit(canon, &admitted_artifacts, &client).await?;
+        adjudications.push(adjudication);
+    }
+
+    let is_passing = adjudications.iter().all(|a| a.is_passing());
+    let failing_count = adjudications.iter().filter(|a| !a.is_passing()).count();
+
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "is_passing": is_passing,
+                "total_adjudicated": adjudications.len(),
+                "failing_count": failing_count,
+                "adjudications": adjudications,
+            }))?);
+        }
+        OutputFormat::Human => {
+            println!("=== Canon Clerk Audit Adjudication ===");
+            println!("Docketed Canons Evaluated: {}", docketed_canons.len());
+            println!("Statutes Adjudicated:      {}", adjudications.len());
+            println!("Outcome:                   {}", if is_passing { "PASS" } else { "FAIL" });
+            println!();
+
+            for adj in &adjudications {
+                let badge = if adj.is_passing() { "[PASS]" } else { "[FAIL]" };
+                println!("{} Canon: `{}` (Score: {:.2})", badge, adj.canon_path, adj.compliance_score);
+                println!("    Decree: {}", adj.compliance_summary);
+
+                if !adj.annotations.is_empty() {
+                    println!("    Violations:");
+                    for ann in &adj.annotations {
+                        let line_str = ann.line.map(|l| format!(":{}", l)).unwrap_or_default();
+                        println!("      - {}{}: [{}] {}", ann.file_path, line_str, ann.severity, ann.message);
+                    }
+                }
+                println!();
+            }
+
+            if is_passing {
+                println!("All active canons satisfied.");
+            } else {
+                println!("Audit FAILED: {} canon violation(s) detected.", failing_count);
+            }
+        }
+    }
+
+    if !is_passing {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
 fn collect_canons_recursive(
-    dir: &std::path::Path,
+    dir: &Path,
     paths: &mut Vec<PathBuf>,
 ) -> std::io::Result<()> {
     if dir.is_dir() {

@@ -120,7 +120,7 @@ impl GoogleProviderClient {
             base_url,
             model: model.into(),
             client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(15))
+                .timeout(Duration::from_secs(60))
                 .build()
                 .unwrap_or_default(),
         }
@@ -357,14 +357,52 @@ impl MockProviderClient {
     pub async fn generate_structured_json(
         &self,
         system_instruction: &str,
-        _prompt: &str,
+        prompt: &str,
     ) -> Result<String, ProbeError> {
         if system_instruction.contains("Docket") {
-            Ok(r#"{"assessments":[{"canonPath":".canons/cli/cli-arguments-must-represent-primary-operands.md","colorabilitySummary":"Touches CLI positional arguments","colorabilityScore":0.85}]}"#.to_string())
+            let mut paths = Vec::new();
+            for line in prompt.lines() {
+                if let Some(rest) = line.strip_prefix("### Canon: `") {
+                    if let Some(end) = rest.strip_suffix('`') {
+                        paths.push(end.to_string());
+                    }
+                }
+            }
+            if paths.is_empty() {
+                paths.push(".canons/cli/cli-arguments-must-represent-primary-operands.md".to_string());
+            }
+            let assessments: Vec<serde_json::Value> = paths
+                .into_iter()
+                .map(|p| serde_json::json!({
+                    "canonPath": p,
+                    "colorabilitySummary": "Touches relevant scope",
+                    "colorabilityScore": 0.85
+                }))
+                .collect();
+            Ok(serde_json::json!({ "assessments": assessments }).to_string())
         } else if system_instruction.contains("admissibility") {
-            Ok(r#"{"exhibits":[{"filePath":"src/main.rs","admissibilitySummary":"Contains CLI argument parser","admissibilityScore":0.9}]}"#.to_string())
+            let mut files = Vec::new();
+            for line in prompt.lines() {
+                if let Some(rest) = line.strip_prefix("### File: `") {
+                    if let Some(idx) = rest.find('`') {
+                        files.push(rest[..idx].to_string());
+                    }
+                }
+            }
+            if files.is_empty() {
+                files.push("src/main.rs".to_string());
+            }
+            let exhibits: Vec<serde_json::Value> = files
+                .into_iter()
+                .map(|f| serde_json::json!({
+                    "filePath": f,
+                    "admissibilitySummary": "Touches relevant implementation",
+                    "admissibilityScore": 0.9
+                }))
+                .collect();
+            Ok(serde_json::json!({ "exhibits": exhibits }).to_string())
         } else {
-            Ok(r#"{"complianceScore":0.95,"complianceSummary":"The CLI arguments correctly adhere to positional operand requirements.","annotations":[]}"#.to_string())
+            Ok(r#"{"complianceScore":0.95,"complianceSummary":"The implementation correctly adheres to canon requirements.","annotations":[]}"#.to_string())
         }
     }
 }

@@ -31,25 +31,24 @@ impl DocketRunner {
             return Ok(Vec::new());
         }
 
-        let prompt = CascadePrompts::build_docket_prompt(canons, diff_summary);
-        let raw_json = client
-            .generate_structured_json(CascadePrompts::DOCKET_SYSTEM_INSTRUCTION, &prompt)
-            .await?;
+        let mut assessments = Vec::new();
+        for chunk in canons.chunks(15) {
+            let prompt = CascadePrompts::build_docket_prompt(chunk, diff_summary);
+            let raw_json = client
+                .generate_structured_json(CascadePrompts::DOCKET_SYSTEM_INSTRUCTION, &prompt)
+                .await?;
 
-        let parsed: DocketResponse = serde_json::from_str(&raw_json)
-            .map_err(|e| ProbeError::Network(format!("Failed to parse docket JSON: {}", e)))?;
+            let parsed: DocketResponse = serde_json::from_str(&raw_json)
+                .map_err(|e| ProbeError::Network(format!("Failed to parse docket JSON: {}", e)))?;
 
-        let assessments = parsed
-            .assessments
-            .into_iter()
-            .map(|item| {
-                ColorabilityAssessment::new(
+            for item in parsed.assessments {
+                assessments.push(ColorabilityAssessment::new(
                     item.canon_path,
                     item.colorability_score,
                     item.colorability_summary,
-                )
-            })
-            .collect();
+                ));
+            }
+        }
 
         Ok(assessments)
     }

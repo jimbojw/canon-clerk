@@ -9,6 +9,6 @@
 - [x] 2.2 Implement `execute_admit` in `src/pipeline/cascade/admit.rs` with unit tests and mock provider
 
 ## 3. Audit Stage & CLI Integration
-- [ ] 3.1 Implement `execute_audit` in `src/pipeline/cascade/audit.rs` with unit tests and mock provider
-- [ ] 3.2 Wire `docket`, `admit`, and `audit` subcommands into CLI in `src/main.rs`
-- [ ] 3.3 Verify with live Gemini provider and run full test suite
+- [x] 3.1 Implement `execute_audit` in `src/pipeline/cascade/audit.rs` with unit tests and mock provider
+- [x] 3.2 Wire `docket`, `admit`, and `audit` subcommands into CLI in `src/main.rs`
+- [x] 3.3 Verify with live Gemini provider and run full test suite
