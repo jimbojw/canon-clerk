@@ -14,7 +14,7 @@
 
 //! CLI driving adapter for the `canon-clerk admit` subcommand (`docs/architecture/nodes/admit.md` §5).
 
-mod guards;
+pub mod guards;
 mod render;
 mod stages;
 

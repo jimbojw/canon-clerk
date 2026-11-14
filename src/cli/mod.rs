@@ -17,6 +17,7 @@
 pub mod admit;
 pub mod apprise;
 pub mod args;
+pub mod audit;
 mod closure;
 pub mod configure;
 pub mod discover;
@@ -38,6 +39,10 @@ pub use apprise::{
     run_apprise_with_snapshot_and_provider, run_apprise_with_telemetry,
 };
 pub use args::{CanonSelectionArgs, CaseloadIoArgs, FilingSourceArgs, ProviderConfigArgs};
+pub use audit::{
+    AuditArgs, AuditFormat, run_audit, run_audit_live_with_telemetry,
+    run_audit_with_snapshot_and_provider, run_audit_with_telemetry,
+};
 pub use configure::{
     ConfigureArgs, ConfigureFormat, run_configure, run_configure_with_env,
     run_configure_with_telemetry,
@@ -83,8 +88,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 const ROOT_EXAMPLES: &str = "\
 Examples:
-  # Ingest a unified diff from standard input into a Caseload filing:
-  git diff origin/main | canon-clerk intake --diff -
+  # Audit a unified diff piped on standard input across the full Caseload cascade:
+  git diff origin/main | canon-clerk audit --diff -
 
   # Ingest explicit target paths or globs:
   canon-clerk intake src/lib.rs 'src/**/*.rs'
@@ -157,6 +162,8 @@ pub enum Commands {
     Docket(DocketArgs),
     /// Micro evidentiary triage: screen candidate file and metadata exhibits per active case.
     Admit(AdmitArgs),
+    /// Judicial adjudication: evaluate admitted exhibits against canon statutes and render verdicts.
+    Audit(AuditArgs),
 }
 
 impl Commands {
@@ -169,7 +176,8 @@ impl Commands {
             | Self::Probe(_)
             | Self::Apprise(_)
             | Self::Docket(_)
-            | Self::Admit(_) => false,
+            | Self::Admit(_)
+            | Self::Audit(_) => false,
         }
     }
 }
@@ -348,6 +356,9 @@ fn dispatch_subcommand(
         Commands::Admit(args) => {
             run_admit_live_with_telemetry(args, stdin, stdout, session)?;
         }
+        Commands::Audit(args) => {
+            run_audit_live_with_telemetry(args, stdin, stdout, session)?;
+        }
     }
     Ok(())
 }
@@ -430,7 +441,8 @@ mod tests {
                     | Commands::Probe(_)
                     | Commands::Apprise(_)
                     | Commands::Docket(_)
-                    | Commands::Admit(_),
+                    | Commands::Admit(_)
+                    | Commands::Audit(_),
                 )
                 | None => {
                     panic!("expected Intake subcommand")

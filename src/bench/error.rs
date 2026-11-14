@@ -16,6 +16,7 @@
 
 use crate::admit::{AdmitError, DEFAULT_ADMIT_THRESHOLD};
 use crate::apprise::{AppriseError, DEFAULT_APPRISE_THRESHOLD};
+use crate::audit::{AuditError, DEFAULT_AUDIT_THRESHOLD};
 use crate::docket::{DEFAULT_DOCKET_THRESHOLD, DocketError};
 use crate::telemetry::PipelineStage;
 use clap::ValueEnum;
@@ -121,8 +122,9 @@ impl BenchmarkStage {
     pub const fn default_threshold(self) -> f64 {
         match self {
             Self::Apprise => DEFAULT_APPRISE_THRESHOLD,
-            Self::Docket | Self::Audit => DEFAULT_DOCKET_THRESHOLD,
+            Self::Docket => DEFAULT_DOCKET_THRESHOLD,
             Self::Admit => DEFAULT_ADMIT_THRESHOLD,
+            Self::Audit => DEFAULT_AUDIT_THRESHOLD,
         }
     }
 }
@@ -156,11 +158,6 @@ pub enum ConsistencyBenchError {
         /// Underlying setup error message.
         detail: String,
     },
-    /// Stage execution for `audit` is not yet wired to a domain runner.
-    UnsupportedStageExecution {
-        /// Requested future stage.
-        stage: BenchmarkStage,
-    },
     /// Expected stage namespace was missing on a completed trial `Caseload`.
     MissingStagePayload {
         /// Stage whose payload was absent.
@@ -181,6 +178,8 @@ pub enum ConsistencyBenchError {
     Docket(DocketError),
     /// Underlying `admit` domain execution error.
     Admit(AdmitError),
+    /// Underlying `audit` domain execution error.
+    Audit(AuditError),
 }
 
 impl ConsistencyBenchError {
@@ -194,12 +193,12 @@ impl ConsistencyBenchError {
             | Self::InvalidBatchSpec { .. }
             | Self::InvalidConcurrency { .. }
             | Self::Setup { .. }
-            | Self::UnsupportedStageExecution { .. }
             | Self::MissingStagePayload { .. }
             | Self::MalformedStagePayload { .. }
             | Self::Apprise(_)
             | Self::Docket(_)
-            | Self::Admit(_) => 2,
+            | Self::Admit(_)
+            | Self::Audit(_) => 2,
         }
     }
 }
@@ -238,14 +237,6 @@ impl fmt::Display for ConsistencyBenchError {
                  Hint: Run `canon-clerk validate` to inspect and repair malformed candidate canons first."
             ),
             Self::Setup { detail } => write!(f, "{detail}"),
-            Self::UnsupportedStageExecution { stage } => write!(
-                f,
-                "Live benchmark execution for `{}` is not yet available because the `{}` domain runner has not been implemented yet.\n  \
-                 Hint: Run `--stage apprise`, `--stage docket`, or `--stage admit` today; `extract_stage_assessments` and `analyze_config_trials` already support `{}` Caseload payloads.",
-                stage.as_str(),
-                stage.as_str(),
-                stage.as_str()
-            ),
             Self::MissingStagePayload { stage, namespace } => write!(
                 f,
                 "Completed `{}` trial Caseload is missing expected `{namespace}` payload.\n  \
@@ -261,6 +252,7 @@ impl fmt::Display for ConsistencyBenchError {
             Self::Apprise(err) => write!(f, "{err}"),
             Self::Docket(err) => write!(f, "{err}"),
             Self::Admit(err) => write!(f, "{err}"),
+            Self::Audit(err) => write!(f, "{err}"),
         }
     }
 }

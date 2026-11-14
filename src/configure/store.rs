@@ -109,6 +109,10 @@ pub struct StoredConfig {
     /// Optional default maximum concurrent in-flight `admit` screener calls (`admitConcurrency` or `admit_concurrency`).
     #[serde(alias = "admitConcurrency", alias = "admit_concurrency")]
     pub admit_concurrency: Option<usize>,
+
+    /// Optional default maximum concurrent in-flight `audit` trial calls (`auditConcurrency` or `audit_concurrency`).
+    #[serde(alias = "auditConcurrency", alias = "audit_concurrency")]
+    pub audit_concurrency: Option<usize>,
 }
 
 impl StoredConfig {
@@ -317,7 +321,8 @@ mod tests {
                 "reasoningBudget": 4096,
                 "appriseBatchSize": 15,
                 "appriseConcurrency": 3,
-                "admitConcurrency": 6
+                "admitConcurrency": 6,
+                "auditConcurrency": 5
             }"#;
             write_config_with_mode(&cfg_path, json, 0o600);
 
@@ -337,6 +342,7 @@ mod tests {
             assert_eq!(loaded.apprise_batch_size, Some(15));
             assert_eq!(loaded.apprise_concurrency, Some(3));
             assert_eq!(loaded.admit_concurrency, Some(6));
+            assert_eq!(loaded.audit_concurrency, Some(5));
 
             let _ = fs::remove_dir_all(&dir);
         }

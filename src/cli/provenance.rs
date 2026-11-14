@@ -16,7 +16,7 @@
 
 use crate::caseload::{
     Caseload, CaseloadDiscovery, CaseloadDocket, CaseloadEvidence, CaseloadIntake,
-    CaseloadValidation, IntakeScope,
+    CaseloadValidation, CaseloadVerdict, IntakeScope,
 };
 use std::io::Write;
 
@@ -37,6 +37,8 @@ pub enum StageDisposition {
     SkippedValidationFailed,
     /// Downstream stage skipped because upstream `docket` opened zero active cases (`active_docket` empty).
     SkippedEmptyDocket,
+    /// Downstream `audit` skipped because upstream `admit` admitted zero exhibits (`active_cases` empty).
+    SkippedZeroEvidence,
 }
 
 pub(crate) fn glyph_for(disp: StageDisposition) -> &'static str {
@@ -46,7 +48,8 @@ pub(crate) fn glyph_for(disp: StageDisposition) -> &'static str {
         StageDisposition::ZeroCandidateShortCircuit
         | StageDisposition::SkippedZeroCandidates
         | StageDisposition::SkippedValidationFailed
-        | StageDisposition::SkippedEmptyDocket => "⊘",
+        | StageDisposition::SkippedEmptyDocket
+        | StageDisposition::SkippedZeroEvidence => "⊘",
         StageDisposition::ValidationFailed => "✗",
     }
 }
@@ -306,6 +309,106 @@ pub(crate) fn write_admit_provenance(
             writeln!(
                 stdout,
                 "  {glyph} admit     : {admitted} exhibit(s) admitted across {active_cases} case(s) ({excluded} excluded, threshold {threshold:.2}){suffix}"
+            )
+        }
+    }
+}
+
+/// Writes the `configure` provenance line across the 7-stage `audit` closure, displaying both screener and auditor models.
+pub(crate) fn write_audit_configure_provenance(
+    caseload: &Caseload,
+    disp: StageDisposition,
+    stdout: &mut dyn Write,
+) -> std::io::Result<()> {
+    match disp {
+        StageDisposition::SkippedZeroCandidates => {
+            writeln!(
+                stdout,
+                "  ⊘ configure : (fast-forward: zero candidate canons)"
+            )
+        }
+        StageDisposition::SkippedValidationFailed => {
+            writeln!(
+                stdout,
+                "  ⊘ configure : (fast-forward: canon validation failed)"
+            )
+        }
+        StageDisposition::SkippedEmptyDocket => {
+            writeln!(
+                stdout,
+                "  ⊘ configure : (fast-forward: empty active docket)"
+            )
+        }
+        StageDisposition::SkippedZeroEvidence => {
+            writeln!(
+                stdout,
+                "  ⊘ configure : (fast-forward: no admissible exhibits)"
+            )
+        }
+        _ => {
+            let glyph = glyph_for(disp);
+            let suffix = fast_forward_suffix(disp);
+            let (screener, auditor) = caseload
+                .config
+                .as_ref()
+                .map_or(("<unresolved>", "<unresolved>"), |c| {
+                    (c.screener_model.as_str(), c.auditor_model.as_str())
+                });
+            writeln!(
+                stdout,
+                "  {glyph} configure : screener '{screener}', auditor '{auditor}'{suffix}"
+            )
+        }
+    }
+}
+
+/// Writes the `audit` provenance line for the 7-stage judicial adjudication closure.
+pub(crate) fn write_audit_provenance(
+    verdict: Option<&CaseloadVerdict>,
+    disp: StageDisposition,
+    threshold: f64,
+    stdout: &mut dyn Write,
+) -> std::io::Result<()> {
+    match disp {
+        StageDisposition::SkippedZeroCandidates => {
+            writeln!(
+                stdout,
+                "  ⊘ audit     : (fast-forward: zero candidate canons)"
+            )
+        }
+        StageDisposition::SkippedValidationFailed => {
+            writeln!(
+                stdout,
+                "  ⊘ audit     : (fast-forward: canon validation failed)"
+            )
+        }
+        StageDisposition::SkippedEmptyDocket => {
+            writeln!(
+                stdout,
+                "  ⊘ audit     : 0 trials scheduled (fast-forward: empty active docket)"
+            )
+        }
+        StageDisposition::SkippedZeroEvidence => {
+            writeln!(
+                stdout,
+                "  ⊘ audit     : 0 trials scheduled (fast-forward: no admissible exhibits)"
+            )
+        }
+        _ => {
+            let suffix = fast_forward_suffix(disp);
+            let (passed, failed, total) = verdict.map_or((0, 0, 0), |v| {
+                (v.passed_count(), v.failed_count(), v.adjudications.len())
+            });
+            let glyph = if failed > 0 {
+                "✗"
+            } else if total == 0 && disp == StageDisposition::Executed {
+                "⊘"
+            } else {
+                glyph_for(disp)
+            };
+            writeln!(
+                stdout,
+                "  {glyph} audit     : {passed} passed, {failed} failed across {total} trial(s) (threshold {threshold:.2}){suffix}"
             )
         }
     }

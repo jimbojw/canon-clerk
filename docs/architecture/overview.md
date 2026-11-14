@@ -244,7 +244,10 @@ The formal Caseload domain models and granular payload schemas are specified in 
 1. **Schema Versioning (`version`):** Every serialized `Caseload` envelope carries a top-level `version` identifier (currently `"1.0"`) establishing wire-format compatibility across piped CLI invocations and archived CI artifacts.
 2. **Stage Namespace Isolation:** Each pipeline stage owns a dedicated, non-overlapping top-level optional namespace on the `Caseload` envelope (`.intake`, `.discovery`, `.validation`, `.config`, `.probe`, `.apprisal`, `.docket`, `.evidence`, `.verdict`). Unexecuted or pruned stages are omitted from serialized JSON rather than emitted as null placeholders.
 3. **Additive Immutability:** Stages enrich only their designated namespace while preserving all pre-existing upstream namespaces bit-for-bit.
-4. **Deterministic Wire Representation:** All map keys and entity collections across stage payloads serialize in deterministic lexicographical order so identical evaluations yield byte-for-byte identical JSON envelopes.
+4. **Three-Tier Determinism & Stability Contract:**
+   - **Engine & Wire Determinism (Bit-for-Bit):** All map keys, entity collections, per-case adjudications, and line annotations across stage payloads serialize in canonical lexicographical order so identical model responses, `--caseload` fast-forwards, and concurrent fold completion orders produce byte-for-byte identical JSON envelopes.
+   - **Gate Verdict Stability (1D Flipper Contract):** Across repeated live runs at `temperature: 0.0`, heuristic stages anchor numeric scores to polarized bands away from the `0.5` decision boundary so per-canon gate classifications (`applicable`, `docketed`, `admitted`, `pass`/`fail`) remain unanimous even when extended reasoning trajectories vary.
+   - **Guidance & Span Granularity (Benign Generative Variance):** Natural wording variations in rationale/remediation prose and minor line-span granularity shifts under extended reasoning are tolerated and never constitute verdict flippers, bounded by deterministic structural anchoring guardrails.
 
 ### Stage Payloads & Authoritative Specifications
 
@@ -270,7 +273,7 @@ Downstream subcommands fast-forward across any stage whose corresponding namespa
 
 Canon Clerk strictly separates **substantive evaluation records** from **operational execution telemetry**:
 
-- **Substantive Record (`Caseload`):** Represents solely substantive findings. Identical inputs evaluated at temperature 0 produce bit-for-bit identical `caseload.json` files, enabling clean git diffs, content-addressable cache keys, and regression snapshot tests.
+- **Substantive Record (`Caseload`):** Represents solely substantive findings, omitting wall-clock timestamps, token counters, and intermediate thought traces so serialized `caseload.json` envelopes remain free of operational telemetry churn across git diffs, cached artifacts, and hermetic snapshot tests.
 - **Event Logging (`stderr` / `--log-file`):** Operational metrics (wall-clock milliseconds, token usage, time-to-first-token/thought) and streaming intermediate chunks (thought deltas) are emitted out-of-band via a structured **Telemetry Event Stream** comprising four lifecycle event categories:
   - **Stage Start (`StageStart`):** Signals entry into a `PipelineStage` along with an ISO-8601 `timestamp`.
   - **Reasoning Delta (`Thought`):** Streams incremental model reasoning `delta` chunks associated with an active `PipelineStage`.

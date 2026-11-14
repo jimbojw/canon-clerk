@@ -76,9 +76,32 @@ Canon Clerk addresses the friction points where static code analysis ends and se
 
 ---
 
+## CLI Usage (`canon-clerk`)
+
+The `canon-clerk` CLI evaluates diffs, target paths, and pull request metadata against `.canons/` rule packs locally or in CI:
+
+```bash
+# Audit an in-flight diff against governing canons (requires GEMINI_API_KEY when candidates match):
+git diff origin/main | canon-clerk audit --diff -
+
+# Audit explicit target paths or run in GitHub Actions annotation mode with Caseload archival:
+canon-clerk audit src/cli
+git diff origin/main | canon-clerk audit --diff - --format github --output-caseload caseload.json
+
+# Statically lint all repository canons offline (0 tokens, no API key required):
+canon-clerk validate --all-canons
+
+# Apprise planned work of governing canons before implementation:
+canon-clerk apprise --intent "Add a new CLI subcommand flag" src/cli
+```
+
+Stage-specific flags (`--audit-threshold`, `--audit-concurrency`, `--admit-threshold`, `--admit-concurrency`, `--docket-threshold`, `--auditor-model`, `--screener-model`, `--reasoning-budget`, `--caseload`, `--json`) and execution mechanics are documented in the [Caseload Pipeline Architecture](docs/architecture/overview.md) and [`audit` Stage Specification](docs/architecture/nodes/audit.md).
+
+---
+
 ## The Canon Corpus
 
-While the automated reference runner is in active development, Canon Clerk already provides a production-grade corpus of **57 modular, domain-scoped canons** adhering to the formal specification ([`SPEC.md`](SPEC.md)). These rule packs are ready to explore, adapt, and use today:
+Canon Clerk includes a production-grade corpus of **57 modular, domain-scoped canons** adhering to the formal specification ([`SPEC.md`](SPEC.md)), ready to explore, adapt, and enforce:
 
 | Domain Pack | Path | Count | Governed Conventions |
 | :--- | :--- | :--- | :--- |
@@ -92,9 +115,9 @@ While the automated reference runner is in active development, Canon Clerk alrea
 | 🎨 **Visual Identity** | [`.canons/visual-identity/`](.canons/visual-identity/) | 1 | Standalone brand iconography isolation, transparent canvas defaults, and defringed alpha perimeter standards. |
 | 🏛️ **Repository Governance** | [`.canons/internal/`](.canons/internal/) | 7 | Internal dogfood policies: curated `llms.txt` maintenance, domain-scoped tagging, and reusable standards. |
 
-### Adopting Canons Today
+### Adopting Canons Alongside the CLI
 
-You do not need to wait for the automated CI runner to benefit from the canon corpus. Teams and AI coding assistants leverage these rules today:
+Beyond automated `canon-clerk audit` gates in CI, teams and AI coding assistants leverage the canon corpus directly across workflows:
 
 - **AI Coding Assistants (Claude Code, Cursor, Copilot, Antigravity):** Reference canon directories or individual canons in `AGENTS.md`, system prompts, or cursorrules to anchor agent generation to your team's architectural invariants.
 - **Pull Request Review Checklists:** Link directly to version-controlled canons in PR templates to make expectations transparent and citations unambiguous.

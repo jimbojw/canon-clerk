@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Core data plane models for the cumulative `Caseload` state container (`.intake`, `.discovery`, `.validation`, `.config`, `.probe`, `.apprisal`, `.docket`, `.evidence`).
+//! Core data plane models for the cumulative `Caseload` state container (`.intake`, `.discovery`, `.validation`, `.config`, `.probe`, `.apprisal`, `.docket`, `.evidence`, `.verdict`).
 
 mod apprisal;
 mod config;
@@ -22,6 +22,7 @@ mod evidence;
 mod intake;
 mod probe;
 mod validation;
+mod verdict;
 
 pub use apprisal::{
     ApprisalStatus, CanonApprisalAssessment, CaseloadApprisal, normalize_unit_score,
@@ -41,6 +42,9 @@ pub use intake::{
 pub use probe::{CaseloadProbe, ProbeEndpointResult, ProbeStatus};
 pub use validation::{
     AnnotationLevel, CaseloadValidation, CodeAnnotation, ValidatedCanonMetadata, ValidationOutcome,
+};
+pub use verdict::{
+    CanonAdjudication, CaseloadVerdict, VerdictStatus, normalize_compliance_score, sort_annotations,
 };
 
 use serde::{Deserialize, Serialize};
@@ -84,7 +88,7 @@ pub struct Caseload {
     pub evidence: Option<CaseloadEvidence>,
     /// Verdict: Final compliance decrees and line annotations.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub verdict: Option<serde_json::Value>,
+    pub verdict: Option<CaseloadVerdict>,
 }
 
 impl Default for Caseload {
@@ -155,6 +159,12 @@ impl Caseload {
     /// Returns a new `Caseload` with the `.evidence` namespace populated, preserving all other stage fields.
     pub fn with_evidence(mut self, evidence: CaseloadEvidence) -> Self {
         self.evidence = Some(evidence);
+        self
+    }
+
+    /// Returns a new `Caseload` with the `.verdict` namespace populated, preserving all other stage fields.
+    pub fn with_verdict(mut self, verdict: CaseloadVerdict) -> Self {
+        self.verdict = Some(verdict);
         self
     }
 }
@@ -288,6 +298,26 @@ mod tests {
             assert_eq!(with_ev.validation, with_doc.validation);
             assert_eq!(with_ev.discovery, with_doc.discovery);
             assert_eq!(with_ev.intake, with_doc.intake);
+        }
+
+        #[test]
+        fn test_with_verdict_preserves_existing_namespaces() {
+            let upstream = Caseload::new()
+                .with_intake(CaseloadIntake::default())
+                .with_discovery(CaseloadDiscovery::default())
+                .with_validation(CaseloadValidation::default())
+                .with_config(CaseloadConfig::default())
+                .with_docket(CaseloadDocket::default())
+                .with_evidence(CaseloadEvidence::default());
+
+            let with_verd = upstream.clone().with_verdict(CaseloadVerdict::default());
+            assert_eq!(with_verd.verdict, Some(CaseloadVerdict::default()));
+            assert_eq!(with_verd.evidence, upstream.evidence);
+            assert_eq!(with_verd.docket, upstream.docket);
+            assert_eq!(with_verd.config, upstream.config);
+            assert_eq!(with_verd.validation, upstream.validation);
+            assert_eq!(with_verd.discovery, upstream.discovery);
+            assert_eq!(with_verd.intake, upstream.intake);
         }
     }
 }

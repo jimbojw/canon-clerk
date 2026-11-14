@@ -339,6 +339,47 @@ fn test_cli_admit_guards_and_zero_candidate_short_circuit() {
 }
 
 #[test]
+fn test_cli_audit_guards_and_zero_candidate_short_circuit() {
+    // Verify audit Case-or-Controversy guard exits 2
+    let audit_all_canons_no_filing = Command::new(bin_path())
+        .args(["audit", "--all-canons"])
+        .output()
+        .expect("failed to execute canon-clerk audit --all-canons");
+    assert_eq!(audit_all_canons_no_filing.status.code(), Some(2));
+
+    // Verify invalid --audit-concurrency 0 and out-of-closure --apprise-threshold exit 2
+    let audit_zero_conc = Command::new(bin_path())
+        .args(["audit", "src/lib.rs", "--audit-concurrency", "0"])
+        .output()
+        .expect("failed to execute canon-clerk audit --audit-concurrency 0");
+    assert_eq!(audit_zero_conc.status.code(), Some(2));
+
+    let audit_out_of_closure = Command::new(bin_path())
+        .args(["audit", "src/lib.rs", "--apprise-threshold", "0.7"])
+        .output()
+        .expect("failed to execute canon-clerk audit --apprise-threshold 0.7");
+    assert_eq!(audit_out_of_closure.status.code(), Some(2));
+
+    // Verify zero-candidate short-circuit exits 0 without GEMINI_API_KEY and attaches passing .verdict
+    let audit_zero_cand = Command::new(bin_path())
+        .args([
+            "audit",
+            "--canon",
+            ".canons/readme-authoring/readme-must-lead-with-what-and-why.md",
+            "src/lib.rs",
+            "--json",
+        ])
+        .env_remove("GEMINI_API_KEY")
+        .env("XDG_CONFIG_HOME", "/nonexistent-canon-clerk-xdg-dir")
+        .output()
+        .expect("failed to execute canon-clerk audit zero-candidate run");
+    assert_eq!(audit_zero_cand.status.code(), Some(0));
+    let parsed: Caseload =
+        serde_json::from_slice(&audit_zero_cand.stdout).expect("parse audit Caseload JSON");
+    assert!(parsed.verdict.expect("verdict").is_pass());
+}
+
+#[test]
 fn test_cli_cold_start_latency() {
     // Benchmark repeated executions of --version to measure process cold start latency
     let bin = bin_path();

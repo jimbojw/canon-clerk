@@ -16,10 +16,10 @@
 
 use super::{BenchmarkStage, ConsistencyBenchError};
 use crate::caseload::{
-    AdmissibilityStatus, ApprisalStatus, Caseload, ColorabilityStatus, normalize_unit_score,
+    AdmissibilityStatus, ApprisalStatus, Caseload, ColorabilityStatus, VerdictStatus,
+    normalize_unit_score,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -85,14 +85,14 @@ pub fn extract_stage_assessments(
     caseload: &Caseload,
     threshold: f64,
 ) -> Result<BTreeMap<SubjectKey, ExtractedAssessment>, ConsistencyBenchError> {
-    let normalized_threshold = normalize_unit_score(threshold)
+    let _normalized_threshold = normalize_unit_score(threshold)
         .map_err(|detail| ConsistencyBenchError::InvalidThreshold { detail })?;
 
     match stage {
         BenchmarkStage::Apprise => extract_apprisal(caseload),
         BenchmarkStage::Docket => extract_docket(caseload),
         BenchmarkStage::Admit => extract_admit(caseload),
-        BenchmarkStage::Audit => extract_audit(caseload, normalized_threshold),
+        BenchmarkStage::Audit => extract_audit(caseload),
     }
 }
 
@@ -184,68 +184,32 @@ fn extract_admit(
     Ok(out)
 }
 
-#[derive(Deserialize)]
-struct RawVerdictPayload {
-    #[serde(default)]
-    adjudications: Vec<RawAdjudicationEntry>,
-}
-
-#[derive(Deserialize)]
-struct RawAdjudicationEntry {
-    canon_path: String,
-    compliance_summary: String,
-    compliance_score: f64,
-    #[serde(default)]
-    status: Option<String>,
-}
-
 fn extract_audit(
     caseload: &Caseload,
-    threshold: f64,
 ) -> Result<BTreeMap<SubjectKey, ExtractedAssessment>, ConsistencyBenchError> {
-    let raw_verdict: &Value =
-        caseload
-            .verdict
-            .as_ref()
-            .ok_or(ConsistencyBenchError::MissingStagePayload {
-                stage: BenchmarkStage::Audit,
-                namespace: ".verdict",
-            })?;
-
-    let parsed: RawVerdictPayload = serde_json::from_value(raw_verdict.clone()).map_err(|err| {
-        ConsistencyBenchError::MalformedStagePayload {
+    let verdict = caseload
+        .verdict
+        .as_ref()
+        .ok_or(ConsistencyBenchError::MissingStagePayload {
             stage: BenchmarkStage::Audit,
-            detail: err.to_string(),
-        }
-    })?;
+            namespace: ".verdict",
+        })?;
 
     let mut out = BTreeMap::new();
-    for entry in parsed.adjudications {
+    for entry in &verdict.adjudications {
         let score = normalize_unit_score(entry.compliance_score).map_err(|detail| {
             ConsistencyBenchError::MalformedStagePayload {
                 stage: BenchmarkStage::Audit,
                 detail,
             }
         })?;
-        let is_positive = match entry.status.as_deref() {
-            Some("pass") => true,
-            Some("fail") => false,
-            _ => score >= threshold,
-        };
-        let status = entry.status.unwrap_or_else(|| {
-            if is_positive {
-                BenchmarkStage::Audit.positive_status_label().to_string()
-            } else {
-                BenchmarkStage::Audit.negative_status_label().to_string()
-            }
-        });
         out.insert(
-            SubjectKey::canon(entry.canon_path),
+            SubjectKey::canon(entry.canon_path.clone()),
             ExtractedAssessment {
-                status,
-                is_positive,
+                status: entry.status.as_str().to_string(),
+                is_positive: entry.status == VerdictStatus::Pass,
                 score,
-                summary: entry.compliance_summary,
+                summary: entry.compliance_summary.clone(),
             },
         );
     }
@@ -257,10 +221,9 @@ mod tests {
     use super::*;
     use crate::apprise::DEFAULT_APPRISE_THRESHOLD;
     use crate::caseload::{
-        CanonApprisalAssessment, CanonDocketAssessment, CaseloadApprisal, CaseloadDocket,
-        CaseloadEvidence, ExhibitAssessment,
+        CanonAdjudication, CanonApprisalAssessment, CanonDocketAssessment, CaseloadApprisal,
+        CaseloadDocket, CaseloadEvidence, CaseloadVerdict, ExhibitAssessment,
     };
-    use serde_json::json;
 
     mod apprise_and_docket_extraction {
         use super::*;
@@ -348,19 +311,16 @@ mod tests {
             assert_eq!(exhibit_item.status, "admitted");
             assert_eq!(exhibit_item.score, 0.92);
 
-            let mut audit_caseload = Caseload::new();
-            audit_caseload.verdict = Some(json!({
-                "status": "fail",
-                "summary": "1 violation",
-                "adjudications": [
-                    {
-                        "canon_path": ".canons/cli/flags.md",
-                        "compliance_summary": "Missing env fallback.",
-                        "compliance_score": 0.2,
-                        "status": "fail"
-                    }
-                ]
-            }));
+            let audit_caseload =
+                Caseload::new().with_verdict(CaseloadVerdict::from_adjudications(vec![
+                    CanonAdjudication {
+                        canon_path: ".canons/cli/flags.md".to_string(),
+                        compliance_summary: "Missing env fallback.".to_string(),
+                        compliance_score: 0.2,
+                        status: VerdictStatus::Fail,
+                        annotations: Vec::new(),
+                    },
+                ]));
 
             let audit_items = extract_stage_assessments(
                 BenchmarkStage::Audit,

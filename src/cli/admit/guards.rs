@@ -58,7 +58,7 @@ pub(super) fn ensure_stage_prefixed_threshold_flags(args: &AdmitArgs) -> Result<
     Ok(())
 }
 
-pub(super) fn resolve_admit_threshold(
+pub(crate) fn resolve_admit_threshold(
     flag_threshold: Option<f64>,
     env: &BTreeMap<String, String>,
 ) -> Result<f64, CliError> {
@@ -93,7 +93,7 @@ pub(super) fn resolve_admit_threshold(
     Ok(DEFAULT_ADMIT_THRESHOLD)
 }
 
-pub(super) fn resolve_admit_concurrency(
+pub(crate) fn resolve_admit_concurrency(
     flag_concurrency: Option<usize>,
     env: &BTreeMap<String, String>,
     stored: Option<&StoredConfig>,

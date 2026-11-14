@@ -14,22 +14,21 @@
 
 //! Clap CLI driving adapter for the multi-run consistency and flipper benchmark harness.
 
+mod io;
 mod resolve;
 
 use super::prepare::{
     ConfigSweepInputs, UpstreamCaseloadInputs, prepare_upstream_caseload, resolve_config_specs,
 };
-use super::render::render_consistency_markdown;
 use super::{
     BenchmarkStage, ConsistencyBenchOptions, ConsistencyBenchReport, TrialSummary,
     execute_consistency_bench_observed,
 };
-use crate::canon::ParseCanonOptions;
+use crate::audit::DEFAULT_AUDIT_TIMEOUT_MS;
 use crate::caseload::Caseload;
 use crate::cli::{
     CanonSelectionArgs, CliError, FilingSourceArgs, ProviderConfigArgs, ensure_single_stdin_source,
-    map_discover_error, read_caseload_operand, resolve_branch_b_options, resolve_gemini_api_key,
-    write_caseload_file,
+    read_caseload_operand, resolve_branch_b_options, resolve_gemini_api_key, write_caseload_file,
 };
 use crate::discover::WorkspaceSnapshot;
 use crate::provider::{
@@ -37,12 +36,15 @@ use crate::provider::{
 };
 use crate::telemetry::{SystemTelemetryClock, TelemetryClock};
 use clap::{Parser, ValueEnum};
+use io::{
+    emit_stdout_report, materialize_disk_snapshot, populate_stage_disk_contents,
+    write_report_json_file,
+};
 use resolve::{ResolvedCliParams, map_bench_error, resolve_cli_parameters};
 use std::collections::BTreeMap;
 use std::env;
-use std::fs;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const BENCH_EXAMPLES: &str = "\
 Examples:
@@ -75,7 +77,7 @@ pub enum ConsistencyBenchFormat {
     author = "PAIR-code",
     version = env!("CARGO_PKG_VERSION"),
     about = "Multi-run consistency and flipper benchmark harness for Caseload heuristic stages",
-    long_about = "Executes N repeated trials of a target Caseload stage (apprise or docket, extensible to admit and audit) against an identical prepared upstream Caseload, reporting status agreement, score standard deviation, latency distribution, and per-run flipper rationales.",
+    long_about = "Executes N repeated trials of a target Caseload stage (apprise, docket, admit, or audit) against an identical prepared upstream Caseload, reporting status agreement, score standard deviation, latency distribution, and per-run flipper rationales.",
     after_help = BENCH_EXAMPLES
 )]
 pub struct ConsistencyBenchCli {
@@ -251,12 +253,13 @@ pub fn run_consistency_bench_cli(
         workspace: &snapshot,
     })
     .map_err(map_bench_error)?;
-    if resolved.stage == BenchmarkStage::Admit
-        && let Some(disc) = &caseload.discovery
-    {
-        snapshot.populate_file_contents_from_disk(&cwd, &disc.target_files);
-    }
+    populate_stage_disk_contents(resolved.stage, &cwd, &caseload, &mut snapshot);
 
+    let stage_timeout_ms = if resolved.stage == BenchmarkStage::Audit {
+        DEFAULT_AUDIT_TIMEOUT_MS
+    } else {
+        DEFAULT_GENERATION_TIMEOUT_MS
+    };
     let specs = resolve_config_specs(&ConfigSweepInputs {
         stage: resolved.stage,
         threshold: resolved.threshold,
@@ -264,7 +267,7 @@ pub fn run_consistency_bench_cli(
         flag_concurrency: cli.concurrency,
         env: &env_map,
         stored_config: configure_opts.stored_config.as_ref(),
-        timeout_ms: DEFAULT_GENERATION_TIMEOUT_MS,
+        timeout_ms: stage_timeout_ms,
     })
     .map_err(map_bench_error)?;
 
@@ -349,29 +352,6 @@ pub fn run_consistency_bench_hermetic(
     )
 }
 
-fn materialize_disk_snapshot(
-    workspace_root: &Path,
-    canon_patterns: &[String],
-    incoming: Option<&Caseload>,
-) -> Result<WorkspaceSnapshot, CliError> {
-    let mut snapshot =
-        WorkspaceSnapshot::from_disk(workspace_root, canon_patterns).map_err(map_discover_error)?;
-    if let Some(disc) = incoming.and_then(|c| c.discovery.as_ref()) {
-        for canon_ref in &disc.candidate_canons {
-            if !snapshot.canons.contains_key(canon_ref) {
-                let full_path = workspace_root.join(canon_ref);
-                if full_path.is_file()
-                    && let Ok(raw) = fs::read_to_string(&full_path)
-                {
-                    let opts = ParseCanonOptions::with_source_ref(canon_ref.clone());
-                    snapshot = snapshot.with_canon_markdown(&raw, &opts);
-                }
-            }
-        }
-    }
-    Ok(snapshot)
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "Internal bridge passing resolved CLI flags, prepared caseload, workspace, provider, clock, and stream handles"
@@ -449,56 +429,10 @@ fn run_prepared_bench_and_emit(
     Ok(report)
 }
 
-fn write_report_json_file(path: &Path, report: &ConsistencyBenchReport) -> Result<(), CliError> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).map_err(|err| {
-            CliError::usage(format!(
-                "Failed to create parent directory `{}` for `--output-json`: {err}\n  \
-                 Hint: Verify directory write permissions for `{}`.",
-                parent.display(),
-                path.display()
-            ))
-        })?;
-    }
-    let payload = serde_json::to_string_pretty(report)
-        .map_err(|err| CliError::runtime(format!("Failed to serialize benchmark JSON: {err}")))?;
-    fs::write(path, format!("{payload}\n")).map_err(|err| {
-        CliError::usage(format!(
-            "Failed to write benchmark JSON to `{}`: {err}\n  \
-             Hint: Verify that `{}` is writable.",
-            path.display(),
-            path.display()
-        ))
-    })
-}
-
-fn emit_stdout_report(
-    report: &ConsistencyBenchReport,
-    format: ConsistencyBenchFormat,
-    include_stable: bool,
-    stdout: &mut dyn Write,
-) -> Result<(), CliError> {
-    match format {
-        ConsistencyBenchFormat::Json => {
-            let payload = serde_json::to_string_pretty(report).map_err(|err| {
-                CliError::runtime(format!("Failed to serialize benchmark JSON: {err}"))
-            })?;
-            writeln!(stdout, "{payload}")
-                .map_err(|err| CliError::runtime(format!("Failed to write stdout: {err}")))
-        }
-        ConsistencyBenchFormat::Markdown => {
-            let rendered = render_consistency_markdown(report, include_stable);
-            write!(stdout, "{rendered}")
-                .map_err(|err| CliError::runtime(format!("Failed to write stdout: {err}")))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canon::ParseCanonOptions;
     use crate::provider::{GenerationRequest, GenerationResponse, ProviderError, TokenUsage};
     use crate::telemetry::SteppingTelemetryClock;
     use clap::CommandFactory;

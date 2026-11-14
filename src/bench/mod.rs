@@ -40,6 +40,7 @@ pub use stats::{TrialRecord, analyze_config_trials};
 
 use crate::admit::{AdmitOptions, execute_admit};
 use crate::apprise::{AppriseOptions, DEFAULT_APPRISE_THRESHOLD, execute_apprise};
+use crate::audit::{AuditOptions, execute_audit};
 use crate::caseload::{
     Caseload, DEFAULT_AUDITOR_MODEL, DEFAULT_SCREENER_MODEL, normalize_unit_score,
 };
@@ -284,7 +285,10 @@ pub fn execute_consistency_bench_observed(
         .map_or(0, |d| d.candidate_canons.len());
     let model = resolved_model_for_stage(options.stage, caseload);
     let mut base_caseload = clear_stage_and_downstream(options.stage, caseload.clone());
-    if options.stage == BenchmarkStage::Admit && base_caseload.docket.is_none() {
+    if matches!(options.stage, BenchmarkStage::Admit | BenchmarkStage::Audit)
+        && base_caseload.docket.is_none()
+        && !(options.stage == BenchmarkStage::Audit && base_caseload.evidence.is_some())
+    {
         base_caseload = execute_docket(
             &DocketOptions::default(),
             base_caseload,
@@ -292,6 +296,10 @@ pub fn execute_consistency_bench_observed(
             provider,
         )
         .map_err(ConsistencyBenchError::Docket)?;
+    }
+    if options.stage == BenchmarkStage::Audit && base_caseload.evidence.is_none() {
+        base_caseload = execute_admit(&AdmitOptions::default(), base_caseload, workspace, provider)
+            .map_err(ConsistencyBenchError::Admit)?;
     }
 
     let mut config_reports = Vec::with_capacity(options.configs.len());
@@ -344,11 +352,6 @@ fn validate_bench_options(options: &ConsistencyBenchOptions) -> Result<(), Consi
     }
     if options.configs.is_empty() {
         return Err(ConsistencyBenchError::EmptyConfigs);
-    }
-    if options.stage == BenchmarkStage::Audit {
-        return Err(ConsistencyBenchError::UnsupportedStageExecution {
-            stage: options.stage,
-        });
     }
     for spec in &options.configs {
         normalize_unit_score(spec.threshold)
@@ -441,7 +444,17 @@ fn execute_single_trial(
                 .map_err(ConsistencyBenchError::Admit)?
         }
         BenchmarkStage::Audit => {
-            return Err(ConsistencyBenchError::UnsupportedStageExecution { stage });
+            let opts = AuditOptions {
+                threshold: spec.threshold,
+                timeout_ms: spec.timeout_ms,
+                max_concurrent_calls: spec.max_concurrent_calls,
+            };
+            session
+                .run_stage(PipelineStage::Audit, |scope| {
+                    let instrumented = scope.instrument_provider(provider);
+                    execute_audit(&opts, base_caseload.clone(), workspace, &instrumented)
+                })
+                .map_err(ConsistencyBenchError::Audit)?
         }
     };
 
@@ -618,7 +631,7 @@ mod tests {
         use super::*;
 
         #[test]
-        fn test_rejects_zero_trials_empty_configs_and_future_stage_live_execution() {
+        fn test_rejects_zero_trials_empty_configs_and_invalid_threshold() {
             let (caseload, ws) = docket_fixture();
             let provider = ScriptedDocketProvider::new();
 
@@ -646,18 +659,161 @@ mod tests {
             .expect_err("empty configs must fail");
             assert_eq!(err_empty.exit_code(), 2);
 
-            let err_audit = execute_consistency_bench(
+            let err_thresh = execute_consistency_bench(
                 &ConsistencyBenchOptions {
-                    stage: BenchmarkStage::Audit,
+                    configs: vec![ConsistencyConfigSpec {
+                        threshold: 1.5,
+                        ..ConsistencyConfigSpec::default()
+                    }],
                     ..ConsistencyBenchOptions::default()
                 },
                 &caseload,
                 &ws,
                 &provider,
             )
-            .expect_err("audit live runner not yet wired");
-            assert_eq!(err_audit.exit_code(), 2);
-            assert!(err_audit.to_string().contains("audit"));
+            .expect_err("out-of-bounds threshold must fail");
+            assert_eq!(err_thresh.exit_code(), 2);
+        }
+    }
+
+    mod audit_multi_trial_execution {
+        use super::*;
+        use crate::audit::DEFAULT_AUDIT_THRESHOLD;
+
+        struct ScriptedAuditProvider {
+            docket_calls: AtomicUsize,
+            admit_calls: AtomicUsize,
+            audit_steady_calls: AtomicUsize,
+            audit_flip_calls: AtomicUsize,
+        }
+
+        impl ScriptedAuditProvider {
+            fn new() -> Self {
+                Self {
+                    docket_calls: AtomicUsize::new(0),
+                    admit_calls: AtomicUsize::new(0),
+                    audit_steady_calls: AtomicUsize::new(0),
+                    audit_flip_calls: AtomicUsize::new(0),
+                }
+            }
+        }
+
+        impl StructuredModelProvider for ScriptedAuditProvider {
+            fn generate_structured(
+                &self,
+                request: &GenerationRequest,
+            ) -> Result<GenerationResponse, ProviderError> {
+                let payload = if request.system_instruction.contains("Macro Subject-Matter") {
+                    self.docket_calls.fetch_add(1, Ordering::SeqCst);
+                    json!({
+                        "cases": [
+                            {
+                                "canon_path": ".canons/cli/flipper.md",
+                                "colorability_summary": "Docketed CLI case.",
+                                "colorability_score": 0.92
+                            },
+                            {
+                                "canon_path": ".canons/cli/steady.md",
+                                "colorability_summary": "Docketed CLI remediation case.",
+                                "colorability_score": 0.90
+                            }
+                        ]
+                    })
+                } else if request
+                    .system_instruction
+                    .contains("Micro Evidentiary Admissibility")
+                {
+                    self.admit_calls.fetch_add(1, Ordering::SeqCst);
+                    json!({
+                        "exhibits": [{
+                            "file_path": "src/cli/mod.rs",
+                            "admissibility_summary": "Admitted CLI exhibit.",
+                            "admissibility_score": 0.94
+                        }]
+                    })
+                } else if request.user_prompt.contains(".canons/cli/steady.md") {
+                    // Steady `fail` across all 3 trials, even though remediation prose and line spans vary!
+                    let turn = self.audit_steady_calls.fetch_add(1, Ordering::SeqCst);
+                    json!({
+                        "compliance_summary": format!("Remediation wording variant #{turn}: add a Hint line."),
+                        "compliance_score": 0.08 + (turn as f64) * 0.03,
+                        "annotations": [{
+                            "path": "src/cli/mod.rs",
+                            "start_line": 10 + turn,
+                            "end_line": 12 + turn * 2,
+                            "annotation_level": "failure",
+                            "message": format!("Line-span variant #{turn}")
+                        }]
+                    })
+                } else {
+                    let turn = self.audit_flip_calls.fetch_add(1, Ordering::SeqCst);
+                    let score = if turn == 1 { 0.88 } else { 0.12 };
+                    json!({
+                        "compliance_summary": format!("Flipper trial {turn}."),
+                        "compliance_score": score,
+                        "annotations": []
+                    })
+                };
+
+                Ok(GenerationResponse {
+                    payload,
+                    resolved_model: "gemini-2.5-pro".to_string(),
+                    thoughts: Vec::new(),
+                    usage: TokenUsage {
+                        prompt_tokens: 300,
+                        completion_tokens: 70,
+                        reasoning_tokens: 130,
+                        total_tokens: 500,
+                    },
+                    latency_ms: 210,
+                })
+            }
+        }
+
+        #[test]
+        fn test_audit_bench_prepares_upstream_once_and_ignores_prose_and_span_variance_on_stable_verdicts()
+         {
+            let (caseload, ws) = docket_fixture();
+            let provider = ScriptedAuditProvider::new();
+            let report = execute_consistency_bench(
+                &ConsistencyBenchOptions {
+                    stage: BenchmarkStage::Audit,
+                    trials: 3,
+                    configs: vec![ConsistencyConfigSpec {
+                        label: "unbounded".to_string(),
+                        threshold: DEFAULT_AUDIT_THRESHOLD,
+                        max_canons_per_call: None,
+                        max_concurrent_calls: None,
+                        timeout_ms: DEFAULT_GENERATION_TIMEOUT_MS,
+                    }],
+                },
+                &caseload,
+                &ws,
+                &provider,
+            )
+            .expect("run 3-trial audit bench");
+
+            assert_eq!(provider.docket_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(provider.admit_calls.load(Ordering::SeqCst), 2);
+            assert_eq!(provider.audit_steady_calls.load(Ordering::SeqCst), 3);
+            assert_eq!(provider.audit_flip_calls.load(Ordering::SeqCst), 3);
+
+            let cfg = &report.configs[0];
+            assert_eq!(cfg.subject_count, 2);
+            assert_eq!(
+                cfg.flipper_count, 1,
+                "only 1D pass/fail verdict flip counts as a flipper; varying prose/spans on steady fail must produce 0 flippers"
+            );
+            assert_eq!(cfg.flippers()[0].canon_path, ".canons/cli/flipper.md");
+
+            let steady = cfg
+                .subjects
+                .iter()
+                .find(|s| s.canon_path == ".canons/cli/steady.md")
+                .expect("steady subject");
+            assert!(!steady.is_flipper);
+            assert_eq!(steady.agreement_rate, 1.0);
+            assert_eq!(steady.negative_count, 3);
         }
     }
 

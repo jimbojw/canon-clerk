@@ -22,6 +22,7 @@ use crate::admit::{DEFAULT_ADMIT_MAX_CONCURRENT_CALLS, ENV_ADMIT_CONCURRENCY};
 use crate::apprise::{
     DEFAULT_APPRISE_MAX_CONCURRENT_CALLS, ENV_APPRISE_BATCH_SIZE, ENV_APPRISE_CONCURRENCY,
 };
+use crate::audit::{DEFAULT_AUDIT_MAX_CONCURRENT_CALLS, ENV_AUDIT_CONCURRENCY};
 use crate::caseload::{Caseload, CaseloadIntake, IntakeScope, normalize_unit_score};
 use crate::cli::CanonSelectionArgs;
 use crate::configure::{ConfigureOptions, StoredConfig, execute_configure};
@@ -99,7 +100,8 @@ const fn default_concurrency_for_stage(stage: BenchmarkStage) -> usize {
     match stage {
         BenchmarkStage::Apprise => DEFAULT_APPRISE_MAX_CONCURRENT_CALLS,
         BenchmarkStage::Admit => DEFAULT_ADMIT_MAX_CONCURRENT_CALLS,
-        BenchmarkStage::Docket | BenchmarkStage::Audit => DEFAULT_DOCKET_MAX_CONCURRENT_CALLS,
+        BenchmarkStage::Docket => DEFAULT_DOCKET_MAX_CONCURRENT_CALLS,
+        BenchmarkStage::Audit => DEFAULT_AUDIT_MAX_CONCURRENT_CALLS,
     }
 }
 
@@ -121,7 +123,8 @@ fn resolve_effective_concurrency(
     let stage_key = match stage {
         BenchmarkStage::Apprise => ENV_APPRISE_CONCURRENCY,
         BenchmarkStage::Admit => ENV_ADMIT_CONCURRENCY,
-        BenchmarkStage::Docket | BenchmarkStage::Audit => ENV_DOCKET_CONCURRENCY,
+        BenchmarkStage::Docket => ENV_DOCKET_CONCURRENCY,
+        BenchmarkStage::Audit => ENV_AUDIT_CONCURRENCY,
     };
     for key in [ENV_BENCH_CONCURRENCY, stage_key, ENV_MAX_CONCURRENT_CALLS] {
         if let Some(raw) = non_empty_env(env, key) {
@@ -140,7 +143,8 @@ fn resolve_effective_concurrency(
         let stored_val = match stage {
             BenchmarkStage::Apprise => cfg.apprise_concurrency,
             BenchmarkStage::Admit => cfg.admit_concurrency,
-            BenchmarkStage::Docket | BenchmarkStage::Audit => cfg.docket_concurrency,
+            BenchmarkStage::Docket => cfg.docket_concurrency,
+            BenchmarkStage::Audit => cfg.audit_concurrency,
         };
         if let Some(val) = stored_val {
             if val == 0 {
