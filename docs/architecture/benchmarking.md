@@ -20,7 +20,7 @@ The **Consistency & Flipper Benchmark** domain service (`bench`) provides a repe
 | :--- | :--- | :--- | :--- | :--- |
 | **`apprise`** | `.apprisal` | 1D (`canon_path`) | Active | Active (`applicable` vs. `dismissed`) |
 | **`docket`** | `.docket` | 1D (`canon_path`) | Active | Active (`docketed` vs. `dismissed`) |
-| **`admit`** | `.evidence` | 2D `(canon_path, exhibit_path)` | Deferred *(pending `admit` runner)* | Active (`admitted` vs. `excluded`, with sparse union backfilling) |
+| **`admit`** | `.evidence` | 2D `(canon_path, exhibit_path)` | Active | Active (`admitted` vs. `excluded`) |
 | **`audit`** | `.verdict` | 1D (`canon_path`) | Deferred *(pending `audit` runner)* | Active (`pass` vs. `fail`) |
 
 ---
@@ -41,7 +41,7 @@ flowchart LR
     subgraph HexagonCore ["Core Crate Domain Services"]
         Upstream["Branch A + B Closure<br/>(intake → discover → validate + configure)"]
         Bench["Consistency Benchmark Engine<br/>(N-Trial Loop, Telemetry Capture, Flipper Stats)"]
-        Stages["Heuristic Stage Engines<br/>(apprise · docket · future admit/audit)"]
+        Stages["Heuristic Stage Engines<br/>(apprise · docket · admit · future audit)"]
     end
 
     subgraph DrivenPort ["Driven Adapter"]
@@ -85,8 +85,8 @@ Different Caseload stages assess different evidentiary units:
 - **1D Canon Scope (`apprise`, `docket`, `audit`):** Each trial yields one score, derived status, and rationale summary per candidate or active canon (`canon_path`). The optional `exhibit_path` attribute is omitted from serialized JSON records.
 - **2D Canon–Exhibit Scope (`admit`):** Micro evidentiary triage evaluates individual candidate exhibits per active case (`(canon_path, exhibit_path)`). Serialized subject records populate both `canon_path` and `exhibit_path`, and human-readable reports render the composite identifier as `<canon_path> :: <exhibit_path>`.
 
-### Sparse Exhibit Union Backfilling
-In `admit` ([`nodes/admit.md`](nodes/admit.md#caseload-delta)), `.evidence.exhibits` retains only exhibits meeting or exceeding `--admit-threshold`, omitting excluded exhibits. When aggregating across $N$ trials, the engine computes the deterministic lexicographical union of all observed subject keys across trials. Any `(canon_path, exhibit_path)` present in at least one trial but absent in trial $t$ is backfilled in trial $t$ as `excluded` (`score: 0.0`) so borderline admissibility flippers are captured rather than dropped.
+### Exhibit Assessment Extraction & Defensive Sparse Backfilling
+In `admit` ([`nodes/admit.md`](nodes/admit.md#caseload-delta)), `.evidence.exhibits` records both `"admitted"` and `"excluded"` assessments with continuous `admissibility_score` values, preserving exact score distributions across trials. When benchmarking `admit` without a pre-populated `.docket`, the harness executes upstream `docket` once prior to the trial loop so all $N$ trials evaluate against an identical active docket. If any external or hand-crafted `Caseload` fixture omits excluded entries in a subset of trials, the aggregator computes the deterministic lexicographical union of observed `(canon_path, exhibit_path)` keys and backfills missing entries as `excluded` (`score: 0.0`).
 
 ### Statistical & Flipper Definitions
 - **Flipper Classification (`is_flipper`):** A subject is classified as a **flipper** if and only if its deterministically derived stage status varies across the $N$ completed trials (equivalently, modal status agreement $< 100\%$).
@@ -105,9 +105,9 @@ In `admit` ([`nodes/admit.md`](nodes/admit.md#caseload-delta)), `.evidence.exhib
 
 The `consistency_bench` CLI adapter (invoked via `./scripts/bench-consistency.sh`) adheres to all repository CLI ergonomics invariants:
 
-- **Precedence Cascade:** Benchmark flags (`--stage`, `--trials`, `--threshold`, `--batch-size`, `--concurrency`, `--format`, `--include-stable`, `--output-json`) resolve with standard precedence: explicit CLI flags $\succ$ `CANON_CLERK_BENCH_*` environment variables $\succ$ stage-specific environment variables (`CANON_CLERK_APPRISE_*`, `CANON_CLERK_DOCKET_*`) $\succ$ host `config.json` defaults $\succ$ built-in defaults (`N = 5` trials, threshold `0.5`, concurrency `4` when batched).
+- **Precedence Cascade:** Benchmark flags (`--stage`, `--trials`, `--threshold`, `--batch-size`, `--concurrency`, `--format`, `--include-stable`, `--output-json`) resolve with standard precedence: explicit CLI flags $\succ$ `CANON_CLERK_BENCH_*` environment variables $\succ$ stage-specific environment variables (`CANON_CLERK_APPRISE_*`, `CANON_CLERK_DOCKET_*`, `CANON_CLERK_ADMIT_*`) $\succ$ host `config.json` defaults $\succ$ built-in defaults (`N = 5` trials, threshold `0.5`, concurrency `4` when batched).
 - **Data vs. Diagnostic Stream Separation:** Per-trial execution progress (`[bench] ...`) writes exclusively to `stderr` (suppressed via `-q` / `--quiet`), while `stdout` emits uncorrupted Markdown diagnostic tables or canonicalized benchmark report JSON (`--json` / `--format json`). `--output-json <path>` archives the structured JSON report to disk independently of `stdout` so operators can view Markdown tables interactively while saving machine-readable artifacts.
 - **Standardized Exit Codes:**
-  - **`0`:** Benchmark completed across all configured trials (including zero-candidate short-circuits or runs where flippers were observed—flipper presence is diagnostic data, not a process error).
+  - **`0`:** Benchmark completed across all configured trials (including zero-candidate and empty-docket short-circuits or runs where flippers were observed—flipper presence is diagnostic data, not a process error).
   - **`1`:** Candidate canon failed static `validate` linting, or local runtime I/O error.
-  - **`2`:** CLI usage error, invalid batch/trial/threshold specification, unsupported live stage (`admit` / `audit` prior to runner implementation), missing credentials, or upstream provider failure.
+  - **`2`:** CLI usage error, invalid batch/trial/threshold specification, unsupported live stage (`audit` prior to runner implementation), missing credentials, or upstream provider failure.

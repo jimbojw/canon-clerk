@@ -15,7 +15,9 @@
 //! Stage-polymorphic assessment extraction across `.apprisal`, `.docket`, `.evidence`, and `.verdict`.
 
 use super::{BenchmarkStage, ConsistencyBenchError};
-use crate::caseload::{ApprisalStatus, Caseload, ColorabilityStatus, normalize_unit_score};
+use crate::caseload::{
+    AdmissibilityStatus, ApprisalStatus, Caseload, ColorabilityStatus, normalize_unit_score,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -89,7 +91,7 @@ pub fn extract_stage_assessments(
     match stage {
         BenchmarkStage::Apprise => extract_apprisal(caseload),
         BenchmarkStage::Docket => extract_docket(caseload),
-        BenchmarkStage::Admit => extract_admit(caseload, normalized_threshold),
+        BenchmarkStage::Admit => extract_admit(caseload),
         BenchmarkStage::Audit => extract_audit(caseload, normalized_threshold),
     }
 }
@@ -147,26 +149,10 @@ fn extract_docket(
     Ok(out)
 }
 
-#[derive(Deserialize)]
-struct RawEvidencePayload {
-    #[serde(default)]
-    exhibits: BTreeMap<String, Vec<RawExhibitEntry>>,
-}
-
-#[derive(Deserialize)]
-struct RawExhibitEntry {
-    file_path: String,
-    admissibility_summary: String,
-    admissibility_score: f64,
-    #[serde(default)]
-    admissibility_status: Option<String>,
-}
-
 fn extract_admit(
     caseload: &Caseload,
-    threshold: f64,
 ) -> Result<BTreeMap<SubjectKey, ExtractedAssessment>, ConsistencyBenchError> {
-    let raw_evidence: &Value =
+    let evidence =
         caseload
             .evidence
             .as_ref()
@@ -175,16 +161,8 @@ fn extract_admit(
                 namespace: ".evidence",
             })?;
 
-    let parsed: RawEvidencePayload =
-        serde_json::from_value(raw_evidence.clone()).map_err(|err| {
-            ConsistencyBenchError::MalformedStagePayload {
-                stage: BenchmarkStage::Admit,
-                detail: err.to_string(),
-            }
-        })?;
-
     let mut out = BTreeMap::new();
-    for (canon_path, entries) in parsed.exhibits {
+    for (canon_path, entries) in &evidence.exhibits {
         for entry in entries {
             let score = normalize_unit_score(entry.admissibility_score).map_err(|detail| {
                 ConsistencyBenchError::MalformedStagePayload {
@@ -192,25 +170,13 @@ fn extract_admit(
                     detail,
                 }
             })?;
-            let is_positive = match entry.admissibility_status.as_deref() {
-                Some("admitted") => true,
-                Some("excluded" | "dismissed") => false,
-                _ => score >= threshold,
-            };
-            let status = entry.admissibility_status.unwrap_or_else(|| {
-                if is_positive {
-                    BenchmarkStage::Admit.positive_status_label().to_string()
-                } else {
-                    BenchmarkStage::Admit.negative_status_label().to_string()
-                }
-            });
             out.insert(
-                SubjectKey::exhibit(canon_path.clone(), entry.file_path),
+                SubjectKey::exhibit(canon_path.clone(), entry.file_path.clone()),
                 ExtractedAssessment {
-                    status,
-                    is_positive,
+                    status: entry.admissibility_status.as_str().to_string(),
+                    is_positive: entry.admissibility_status == AdmissibilityStatus::Admitted,
                     score,
-                    summary: entry.admissibility_summary,
+                    summary: entry.admissibility_summary.clone(),
                 },
             );
         }
@@ -292,6 +258,7 @@ mod tests {
     use crate::apprise::DEFAULT_APPRISE_THRESHOLD;
     use crate::caseload::{
         CanonApprisalAssessment, CanonDocketAssessment, CaseloadApprisal, CaseloadDocket,
+        CaseloadEvidence, ExhibitAssessment,
     };
     use serde_json::json;
 
@@ -355,18 +322,18 @@ mod tests {
 
         #[test]
         fn test_extracts_admit_composite_canon_exhibit_keys_and_audit_verdicts() {
-            let mut admit_caseload = Caseload::new();
-            admit_caseload.evidence = Some(json!({
-                "exhibits": {
-                    ".canons/cli/flags.md": [
-                        {
-                            "file_path": "src/cli/args.rs",
-                            "admissibility_summary": "Defines CLI flag group.",
-                            "admissibility_score": 0.92
-                        }
-                    ]
-                }
-            }));
+            let mut admit_map = BTreeMap::new();
+            admit_map.insert(
+                ".canons/cli/flags.md".to_string(),
+                vec![ExhibitAssessment {
+                    file_path: "src/cli/args.rs".to_string(),
+                    admissibility_summary: "Defines CLI flag group.".to_string(),
+                    admissibility_score: 0.92,
+                    admissibility_status: AdmissibilityStatus::Admitted,
+                }],
+            );
+            let admit_caseload =
+                Caseload::new().with_evidence(CaseloadEvidence::from_exhibits(admit_map));
 
             let admit_items = extract_stage_assessments(
                 BenchmarkStage::Admit,
@@ -424,16 +391,17 @@ mod tests {
             .expect_err("missing .apprisal must fail");
             assert!(err.to_string().contains(".apprisal"));
 
-            let mut bad_admit = Caseload::new();
-            bad_admit.evidence = Some(json!({
-                "exhibits": {
-                    ".canons/a.md": [{
-                        "file_path": "src/lib.rs",
-                        "admissibility_summary": "Out of range",
-                        "admissibility_score": 1.5
-                    }]
-                }
-            }));
+            let mut bad_map = BTreeMap::new();
+            bad_map.insert(
+                ".canons/a.md".to_string(),
+                vec![ExhibitAssessment {
+                    file_path: "src/lib.rs".to_string(),
+                    admissibility_summary: "Out of range".to_string(),
+                    admissibility_score: 1.5,
+                    admissibility_status: AdmissibilityStatus::Admitted,
+                }],
+            );
+            let bad_admit = Caseload::new().with_evidence(CaseloadEvidence::from_exhibits(bad_map));
             let score_err = extract_stage_assessments(
                 BenchmarkStage::Admit,
                 &bad_admit,

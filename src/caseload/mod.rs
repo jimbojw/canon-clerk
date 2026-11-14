@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Core data plane models for the cumulative `Caseload` state container (`.intake`, `.discovery`, `.validation`, `.config`, `.probe`, `.apprisal`, `.docket`).
+//! Core data plane models for the cumulative `Caseload` state container (`.intake`, `.discovery`, `.validation`, `.config`, `.probe`, `.apprisal`, `.docket`, `.evidence`).
 
 mod apprisal;
 mod config;
 mod discovery;
 mod docket;
+mod evidence;
 mod intake;
 mod probe;
 mod validation;
@@ -29,6 +30,9 @@ pub use config::{CaseloadConfig, DEFAULT_AUDITOR_MODEL, DEFAULT_PROVIDER, DEFAUL
 pub use discovery::{ActiveExhibits, CaseloadDiscovery, DiscoveryMode};
 pub use docket::{
     CanonDocketAssessment, CaseloadDocket, ColorabilityStatus, normalize_colorability_score,
+};
+pub use evidence::{
+    AdmissibilityStatus, CaseloadEvidence, ExhibitAssessment, normalize_admissibility_score,
 };
 pub use intake::{
     CaseloadIntake, ContentOmissionReason, FileArtifact, FileChangeStatus, IntakeScope,
@@ -75,9 +79,9 @@ pub struct Caseload {
     /// Docket: Macro triage colorability assessments and active docket cases.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docket: Option<CaseloadDocket>,
-    /// Evidence: Micro triage admitted exhibits per active case.
+    /// Evidence: Micro triage admitted and excluded exhibits per active case.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub evidence: Option<serde_json::Value>,
+    pub evidence: Option<CaseloadEvidence>,
     /// Verdict: Final compliance decrees and line annotations.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verdict: Option<serde_json::Value>,
@@ -145,6 +149,12 @@ impl Caseload {
     /// Returns a new `Caseload` with the `.docket` namespace populated, preserving all other stage fields.
     pub fn with_docket(mut self, docket: CaseloadDocket) -> Self {
         self.docket = Some(docket);
+        self
+    }
+
+    /// Returns a new `Caseload` with the `.evidence` namespace populated, preserving all other stage fields.
+    pub fn with_evidence(mut self, evidence: CaseloadEvidence) -> Self {
+        self.evidence = Some(evidence);
         self
     }
 }
@@ -270,6 +280,14 @@ mod tests {
             assert_eq!(with_doc.validation, upstream.validation);
             assert_eq!(with_doc.discovery, upstream.discovery);
             assert_eq!(with_doc.intake, upstream.intake);
+
+            let with_ev = with_doc.clone().with_evidence(CaseloadEvidence::default());
+            assert_eq!(with_ev.evidence, Some(CaseloadEvidence::default()));
+            assert_eq!(with_ev.docket, with_doc.docket);
+            assert_eq!(with_ev.config, with_doc.config);
+            assert_eq!(with_ev.validation, with_doc.validation);
+            assert_eq!(with_ev.discovery, with_doc.discovery);
+            assert_eq!(with_ev.intake, with_doc.intake);
         }
     }
 }

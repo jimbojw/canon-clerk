@@ -26,15 +26,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
-/// In-memory snapshot of workspace file paths and discovered [`Canon`] definitions.
+/// In-memory snapshot of workspace file paths, optional UTF-8 target file contents, and discovered [`Canon`] definitions.
 ///
-/// Decouples filesystem traversal from pure [`super::execute_discover`] domain evaluation.
+/// Decouples filesystem traversal from pure domain evaluation (`discover`, `validate`, `apprise`, `docket`, `admit`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkspaceSnapshot {
     /// Stably sorted workspace-relative POSIX file paths present in the workspace.
     pub existing_files: BTreeSet<String>,
     /// Discovered [`Canon`] entities keyed by workspace-relative POSIX path or source reference.
     pub canons: BTreeMap<String, Canon>,
+    /// Optional materialized UTF-8 file contents keyed by workspace-relative POSIX path (populated JIT for target-path sweeps).
+    pub file_contents: BTreeMap<String, String>,
 }
 
 impl WorkspaceSnapshot {
@@ -51,6 +53,41 @@ impl WorkspaceSnapshot {
             self.existing_files.insert(normalized);
         }
         self
+    }
+
+    /// Inserts a workspace-relative file path alongside its UTF-8 text content into the snapshot.
+    pub fn with_file_content(
+        mut self,
+        path: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        if let Ok(normalized) = normalize_workspace_path(&path.into())
+            && normalized != "."
+        {
+            self.existing_files.insert(normalized.clone());
+            self.file_contents.insert(normalized, content.into());
+        }
+        self
+    }
+
+    /// Populates UTF-8 `file_contents` on disk for the specified workspace-relative `paths`
+    /// when not already cached, skipping missing, directory, or non-UTF-8 binary files.
+    pub fn populate_file_contents_from_disk(&mut self, workspace_root: &Path, paths: &[String]) {
+        for raw_path in paths {
+            let Ok(normalized) = normalize_workspace_path(raw_path) else {
+                continue;
+            };
+            if normalized == "." || self.file_contents.contains_key(&normalized) {
+                continue;
+            }
+            let full_path = workspace_root.join(&normalized);
+            if full_path.is_file()
+                && let Ok(content) = fs::read_to_string(&full_path)
+            {
+                self.existing_files.insert(normalized.clone());
+                self.file_contents.insert(normalized, content);
+            }
+        }
     }
 
     /// Inserts a pre-parsed [`Canon`] keyed by its workspace-relative path or source reference.
@@ -111,6 +148,7 @@ impl WorkspaceSnapshot {
         Ok(Self {
             existing_files,
             canons,
+            file_contents: BTreeMap::new(),
         })
     }
 }

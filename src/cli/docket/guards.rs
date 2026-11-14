@@ -60,10 +60,16 @@ pub(super) fn ensure_stage_prefixed_threshold_flags(args: &DocketArgs) -> Result
              Hint: Pass `--docket-concurrency <COUNT>` (or `--max-concurrent-calls <COUNT>`) for macro subject-matter jurisdiction triage.",
         ));
     }
+    if args.rejected_admit_concurrency.is_some() {
+        return Err(CliError::usage(
+            "Out-of-closure flag `--admit-concurrency` is not valid for `canon-clerk docket` (`admit` is downstream of `docket`).\n  \
+             Hint: Pass `--docket-concurrency <COUNT>` (or `--max-concurrent-calls <COUNT>`) for macro subject-matter jurisdiction triage.",
+        ));
+    }
     Ok(())
 }
 
-pub(super) fn resolve_docket_threshold(
+pub(crate) fn resolve_docket_threshold(
     flag_threshold: Option<f64>,
     env: &BTreeMap<String, String>,
 ) -> Result<f64, CliError> {
@@ -98,7 +104,7 @@ pub(super) fn resolve_docket_threshold(
     Ok(DEFAULT_DOCKET_THRESHOLD)
 }
 
-pub(super) fn resolve_docket_batch_size(
+pub(crate) fn resolve_docket_batch_size(
     flag_batch_size: Option<usize>,
     env: &BTreeMap<String, String>,
     stored: Option<&StoredConfig>,
@@ -138,7 +144,7 @@ pub(super) fn resolve_docket_batch_size(
     Ok(None)
 }
 
-pub(super) fn resolve_docket_concurrency(
+pub(crate) fn resolve_docket_concurrency(
     flag_concurrency: Option<usize>,
     env: &BTreeMap<String, String>,
     stored: Option<&StoredConfig>,
@@ -192,7 +198,7 @@ pub(super) fn can_fast_forward_completed_docket(
         && !has_provider_overrides(&args.provider)
 }
 
-pub(super) fn has_concrete_cli_filing(intake_opts: &IntakeOptions) -> bool {
+pub(crate) fn has_concrete_cli_filing(intake_opts: &IntakeOptions) -> bool {
     intake_opts.all_targets
         || intake_opts.patch_content.is_some()
         || intake_opts.target_paths.is_some()

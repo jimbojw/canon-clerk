@@ -14,7 +14,7 @@
 
 //! CLI driving adapter for the `canon-clerk docket` subcommand (`docs/architecture/nodes/docket.md` §5).
 
-mod guards;
+pub mod guards;
 mod render;
 mod stages;
 
@@ -129,6 +129,10 @@ pub struct DocketArgs {
     /// Hidden capture rejecting out-of-closure `--apprise-concurrency`.
     #[arg(long = "apprise-concurrency", hide = true, allow_hyphen_values = true)]
     pub rejected_apprise_concurrency: Option<String>,
+
+    /// Hidden capture rejecting out-of-closure `--admit-concurrency`.
+    #[arg(long = "admit-concurrency", hide = true, allow_hyphen_values = true)]
+    pub rejected_admit_concurrency: Option<String>,
 
     #[command(flatten)]
     pub provider: ProviderConfigArgs,

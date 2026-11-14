@@ -14,6 +14,7 @@
 
 //! Stage identifiers, environment constants, and typed errors for the consistency benchmark harness.
 
+use crate::admit::{AdmitError, DEFAULT_ADMIT_THRESHOLD};
 use crate::apprise::{AppriseError, DEFAULT_APPRISE_THRESHOLD};
 use crate::docket::{DEFAULT_DOCKET_THRESHOLD, DocketError};
 use crate::telemetry::PipelineStage;
@@ -120,7 +121,8 @@ impl BenchmarkStage {
     pub const fn default_threshold(self) -> f64 {
         match self {
             Self::Apprise => DEFAULT_APPRISE_THRESHOLD,
-            Self::Docket | Self::Admit | Self::Audit => DEFAULT_DOCKET_THRESHOLD,
+            Self::Docket | Self::Audit => DEFAULT_DOCKET_THRESHOLD,
+            Self::Admit => DEFAULT_ADMIT_THRESHOLD,
         }
     }
 }
@@ -154,7 +156,7 @@ pub enum ConsistencyBenchError {
         /// Underlying setup error message.
         detail: String,
     },
-    /// Stage execution for `admit` or `audit` is not yet wired to a domain runner.
+    /// Stage execution for `audit` is not yet wired to a domain runner.
     UnsupportedStageExecution {
         /// Requested future stage.
         stage: BenchmarkStage,
@@ -177,6 +179,8 @@ pub enum ConsistencyBenchError {
     Apprise(AppriseError),
     /// Underlying `docket` domain execution error.
     Docket(DocketError),
+    /// Underlying `admit` domain execution error.
+    Admit(AdmitError),
 }
 
 impl ConsistencyBenchError {
@@ -194,7 +198,8 @@ impl ConsistencyBenchError {
             | Self::MissingStagePayload { .. }
             | Self::MalformedStagePayload { .. }
             | Self::Apprise(_)
-            | Self::Docket(_) => 2,
+            | Self::Docket(_)
+            | Self::Admit(_) => 2,
         }
     }
 }
@@ -236,7 +241,7 @@ impl fmt::Display for ConsistencyBenchError {
             Self::UnsupportedStageExecution { stage } => write!(
                 f,
                 "Live benchmark execution for `{}` is not yet available because the `{}` domain runner has not been implemented yet.\n  \
-                 Hint: Run `--stage apprise` or `--stage docket` today; `extract_stage_assessments` and `analyze_config_trials` already support `{}` Caseload payloads.",
+                 Hint: Run `--stage apprise`, `--stage docket`, or `--stage admit` today; `extract_stage_assessments` and `analyze_config_trials` already support `{}` Caseload payloads.",
                 stage.as_str(),
                 stage.as_str(),
                 stage.as_str()
@@ -255,6 +260,7 @@ impl fmt::Display for ConsistencyBenchError {
             ),
             Self::Apprise(err) => write!(f, "{err}"),
             Self::Docket(err) => write!(f, "{err}"),
+            Self::Admit(err) => write!(f, "{err}"),
         }
     }
 }

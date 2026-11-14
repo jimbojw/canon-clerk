@@ -297,6 +297,48 @@ fn test_cli_docket_guards_and_batch_validation() {
 }
 
 #[test]
+fn test_cli_admit_guards_and_zero_candidate_short_circuit() {
+    // Verify admit Case-or-Controversy guard exits 2
+    let admit_all_canons_no_filing = Command::new(bin_path())
+        .args(["admit", "--all-canons"])
+        .output()
+        .expect("failed to execute canon-clerk admit --all-canons");
+    assert_eq!(admit_all_canons_no_filing.status.code(), Some(2));
+
+    // Verify invalid --admit-concurrency 0 and out-of-closure --apprise-threshold exit 2
+    let admit_zero_conc = Command::new(bin_path())
+        .args(["admit", "src/lib.rs", "--admit-concurrency", "0"])
+        .output()
+        .expect("failed to execute canon-clerk admit --admit-concurrency 0");
+    assert_eq!(admit_zero_conc.status.code(), Some(2));
+
+    let admit_out_of_closure = Command::new(bin_path())
+        .args(["admit", "src/lib.rs", "--apprise-threshold", "0.7"])
+        .output()
+        .expect("failed to execute canon-clerk admit --apprise-threshold 0.7");
+    assert_eq!(admit_out_of_closure.status.code(), Some(2));
+
+    // Verify zero-candidate short-circuit exits 0 without GEMINI_API_KEY
+    let admit_zero_cand = Command::new(bin_path())
+        .args([
+            "admit",
+            "--canon",
+            ".canons/readme-authoring/readme-must-lead-with-what-and-why.md",
+            "src/lib.rs",
+            "--json",
+        ])
+        .env_remove("GEMINI_API_KEY")
+        .env("XDG_CONFIG_HOME", "/nonexistent-canon-clerk-xdg-dir")
+        .output()
+        .expect("failed to execute canon-clerk admit zero-candidate run");
+    assert_eq!(admit_zero_cand.status.code(), Some(0));
+    let parsed: Caseload =
+        serde_json::from_slice(&admit_zero_cand.stdout).expect("parse admit Caseload JSON");
+    assert!(parsed.evidence.is_some());
+    assert!(parsed.evidence.expect("evidence").active_cases.is_empty());
+}
+
+#[test]
 fn test_cli_cold_start_latency() {
     // Benchmark repeated executions of --version to measure process cold start latency
     let bin = bin_path();

@@ -14,6 +14,7 @@
 
 //! Canon Clerk: Automated review gate enforcing declarative engineering rule packs.
 
+pub mod admit;
 pub mod apprise;
 pub mod bench;
 pub mod canon;
@@ -28,6 +29,10 @@ pub mod provider;
 pub mod telemetry;
 pub mod validate;
 
+pub use admit::{
+    AdmitError, AdmitOptions, DEFAULT_ADMIT_MAX_CONCURRENT_CALLS, DEFAULT_ADMIT_THRESHOLD,
+    ENV_ADMIT_CONCURRENCY, ENV_ADMIT_THRESHOLD, execute_admit,
+};
 pub use apprise::{
     AppriseError, AppriseOptions, DEFAULT_APPRISE_MAX_CONCURRENT_CALLS, DEFAULT_APPRISE_THRESHOLD,
     ENV_APPRISE_BATCH_SIZE, ENV_APPRISE_CONCURRENCY, ENV_APPRISE_THRESHOLD, execute_apprise,
@@ -57,23 +62,27 @@ pub use canon::{
     scope_pattern, to_kebab_case, tokenize_canon,
 };
 pub use caseload::{
-    ActiveExhibits, AnnotationLevel, ApprisalStatus, CASELOAD_SCHEMA_VERSION,
+    ActiveExhibits, AdmissibilityStatus, AnnotationLevel, ApprisalStatus, CASELOAD_SCHEMA_VERSION,
     CanonApprisalAssessment, CanonDocketAssessment, Caseload, CaseloadApprisal, CaseloadConfig,
-    CaseloadDiscovery, CaseloadDocket, CaseloadIntake, CaseloadProbe, CaseloadValidation,
-    CodeAnnotation, ColorabilityStatus, ContentOmissionReason, DEFAULT_AUDITOR_MODEL,
-    DEFAULT_PROVIDER, DEFAULT_SCREENER_MODEL, DiscoveryMode, FileArtifact, FileChangeStatus,
-    IntakeScope, LinkedIssueContext, PatchOmissionReason, ProbeEndpointResult, ProbeStatus,
-    ValidatedCanonMetadata, ValidationOutcome, normalize_colorability_score, normalize_unit_score,
+    CaseloadDiscovery, CaseloadDocket, CaseloadEvidence, CaseloadIntake, CaseloadProbe,
+    CaseloadValidation, CodeAnnotation, ColorabilityStatus, ContentOmissionReason,
+    DEFAULT_AUDITOR_MODEL, DEFAULT_PROVIDER, DEFAULT_SCREENER_MODEL, DiscoveryMode,
+    ExhibitAssessment, FileArtifact, FileChangeStatus, IntakeScope, LinkedIssueContext,
+    PatchOmissionReason, ProbeEndpointResult, ProbeStatus, ValidatedCanonMetadata,
+    ValidationOutcome, normalize_admissibility_score, normalize_colorability_score,
+    normalize_unit_score,
 };
 pub use cli::{
-    AppriseArgs, AppriseFormat, CanonSelectionArgs, CaseloadIoArgs, Cli, CliError, Commands,
-    ConfigureArgs, ConfigureFormat, DiscoverArgs, DiscoverFormat, DocketArgs, DocketFormat,
-    ENV_LOG_FILE, ENV_VERBOSE, FilingSourceArgs, IntakeArgs, ProbeArgs, ProbeFormat,
+    AdmitArgs, AdmitFormat, AppriseArgs, AppriseFormat, CanonSelectionArgs, CaseloadIoArgs, Cli,
+    CliError, Commands, ConfigureArgs, ConfigureFormat, DiscoverArgs, DiscoverFormat, DocketArgs,
+    DocketFormat, ENV_LOG_FILE, ENV_VERBOSE, FilingSourceArgs, IntakeArgs, ProbeArgs, ProbeFormat,
     ProviderConfigArgs, StageDisposition, StderrProgressSink, StderrTelemetryOptions, ValidateArgs,
     ValidateFormat, build_cli_telemetry_sink, init_logging, open_jsonl_log_sink,
-    resolve_log_file_path, resolve_verbose_flag, run, run_apprise, run_apprise_live_with_telemetry,
-    run_apprise_with_snapshot_and_provider, run_apprise_with_telemetry, run_configure,
-    run_configure_with_env, run_configure_with_telemetry, run_discover, run_discover_in_workspace,
+    resolve_log_file_path, resolve_verbose_flag, run, run_admit, run_admit_live_with_telemetry,
+    run_admit_with_snapshot_and_provider, run_admit_with_telemetry, run_apprise,
+    run_apprise_live_with_telemetry, run_apprise_with_snapshot_and_provider,
+    run_apprise_with_telemetry, run_configure, run_configure_with_env,
+    run_configure_with_telemetry, run_discover, run_discover_in_workspace,
     run_discover_with_telemetry, run_docket, run_docket_live_with_telemetry,
     run_docket_with_snapshot_and_provider, run_docket_with_telemetry, run_intake,
     run_intake_with_telemetry, run_probe, run_probe_with_env_and_prober, run_probe_with_telemetry,

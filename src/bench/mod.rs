@@ -38,6 +38,7 @@ pub use prepare::{
 pub use render::render_consistency_markdown;
 pub use stats::{TrialRecord, analyze_config_trials};
 
+use crate::admit::{AdmitOptions, execute_admit};
 use crate::apprise::{AppriseOptions, DEFAULT_APPRISE_THRESHOLD, execute_apprise};
 use crate::caseload::{
     Caseload, DEFAULT_AUDITOR_MODEL, DEFAULT_SCREENER_MODEL, normalize_unit_score,
@@ -282,7 +283,16 @@ pub fn execute_consistency_bench_observed(
         .as_ref()
         .map_or(0, |d| d.candidate_canons.len());
     let model = resolved_model_for_stage(options.stage, caseload);
-    let base_caseload = clear_stage_and_downstream(options.stage, caseload.clone());
+    let mut base_caseload = clear_stage_and_downstream(options.stage, caseload.clone());
+    if options.stage == BenchmarkStage::Admit && base_caseload.docket.is_none() {
+        base_caseload = execute_docket(
+            &DocketOptions::default(),
+            base_caseload,
+            workspace,
+            provider,
+        )
+        .map_err(ConsistencyBenchError::Docket)?;
+    }
 
     let mut config_reports = Vec::with_capacity(options.configs.len());
     for spec in &options.configs {
@@ -335,7 +345,7 @@ fn validate_bench_options(options: &ConsistencyBenchOptions) -> Result<(), Consi
     if options.configs.is_empty() {
         return Err(ConsistencyBenchError::EmptyConfigs);
     }
-    if matches!(options.stage, BenchmarkStage::Admit | BenchmarkStage::Audit) {
+    if options.stage == BenchmarkStage::Audit {
         return Err(ConsistencyBenchError::UnsupportedStageExecution {
             stage: options.stage,
         });
@@ -417,7 +427,20 @@ fn execute_single_trial(
                 })
                 .map_err(ConsistencyBenchError::Docket)?
         }
-        BenchmarkStage::Admit | BenchmarkStage::Audit => {
+        BenchmarkStage::Admit => {
+            let opts = AdmitOptions {
+                threshold: spec.threshold,
+                timeout_ms: spec.timeout_ms,
+                max_concurrent_calls: spec.max_concurrent_calls,
+            };
+            session
+                .run_stage(PipelineStage::Admit, |scope| {
+                    let instrumented = scope.instrument_provider(provider);
+                    execute_admit(&opts, base_caseload.clone(), workspace, &instrumented)
+                })
+                .map_err(ConsistencyBenchError::Admit)?
+        }
+        BenchmarkStage::Audit => {
             return Err(ConsistencyBenchError::UnsupportedStageExecution { stage });
         }
     };
@@ -623,18 +646,118 @@ mod tests {
             .expect_err("empty configs must fail");
             assert_eq!(err_empty.exit_code(), 2);
 
-            let err_admit = execute_consistency_bench(
+            let err_audit = execute_consistency_bench(
                 &ConsistencyBenchOptions {
-                    stage: BenchmarkStage::Admit,
+                    stage: BenchmarkStage::Audit,
                     ..ConsistencyBenchOptions::default()
                 },
                 &caseload,
                 &ws,
                 &provider,
             )
-            .expect_err("admit live runner not yet wired");
-            assert_eq!(err_admit.exit_code(), 2);
-            assert!(err_admit.to_string().contains("admit"));
+            .expect_err("audit live runner not yet wired");
+            assert_eq!(err_audit.exit_code(), 2);
+            assert!(err_audit.to_string().contains("audit"));
+        }
+    }
+
+    mod admit_multi_trial_execution {
+        use super::*;
+        use crate::admit::DEFAULT_ADMIT_THRESHOLD;
+
+        struct ScriptedAdmitProvider {
+            docket_calls: AtomicUsize,
+            admit_calls: AtomicUsize,
+        }
+
+        impl ScriptedAdmitProvider {
+            fn new() -> Self {
+                Self {
+                    docket_calls: AtomicUsize::new(0),
+                    admit_calls: AtomicUsize::new(0),
+                }
+            }
+        }
+
+        impl StructuredModelProvider for ScriptedAdmitProvider {
+            fn generate_structured(
+                &self,
+                request: &GenerationRequest,
+            ) -> Result<GenerationResponse, ProviderError> {
+                let payload = if request.system_instruction.contains("Macro Subject-Matter") {
+                    self.docket_calls.fetch_add(1, Ordering::SeqCst);
+                    json!({
+                        "cases": [
+                            {
+                                "canon_path": ".canons/cli/flipper.md",
+                                "colorability_summary": "Docketed CLI case.",
+                                "colorability_score": 0.90
+                            },
+                            {
+                                "canon_path": ".canons/cli/steady.md",
+                                "colorability_summary": "Dismissed.",
+                                "colorability_score": 0.05
+                            }
+                        ]
+                    })
+                } else {
+                    let idx = self.admit_calls.fetch_add(1, Ordering::SeqCst);
+                    let score = if idx == 1 { 0.30 } else { 0.85 };
+                    json!({
+                        "exhibits": [{
+                            "file_path": "src/cli/mod.rs",
+                            "admissibility_summary": format!("Admit turn {idx}."),
+                            "admissibility_score": score
+                        }]
+                    })
+                };
+                Ok(GenerationResponse {
+                    payload,
+                    resolved_model: "gemini-2.5-flash-lite".to_string(),
+                    thoughts: Vec::new(),
+                    usage: TokenUsage {
+                        prompt_tokens: 150,
+                        completion_tokens: 40,
+                        reasoning_tokens: 0,
+                        total_tokens: 190,
+                    },
+                    latency_ms: 80,
+                })
+            }
+        }
+
+        #[test]
+        fn test_executes_admit_trials_against_single_prepared_docket_and_tracks_2d_flippers() {
+            let (caseload, ws) = docket_fixture();
+            let provider = ScriptedAdmitProvider::new();
+            let report = execute_consistency_bench(
+                &ConsistencyBenchOptions {
+                    stage: BenchmarkStage::Admit,
+                    trials: 3,
+                    configs: vec![ConsistencyConfigSpec {
+                        label: "unbounded".to_string(),
+                        threshold: DEFAULT_ADMIT_THRESHOLD,
+                        max_canons_per_call: None,
+                        max_concurrent_calls: None,
+                        timeout_ms: DEFAULT_GENERATION_TIMEOUT_MS,
+                    }],
+                },
+                &caseload,
+                &ws,
+                &provider,
+            )
+            .expect("run 3-trial admit bench");
+
+            assert_eq!(provider.docket_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(provider.admit_calls.load(Ordering::SeqCst), 3);
+            let cfg = &report.configs[0];
+            assert_eq!(cfg.flipper_count, 1);
+            assert_eq!(
+                cfg.flippers()[0].exhibit_path.as_deref(),
+                Some("src/cli/mod.rs")
+            );
+            assert_eq!(cfg.flippers()[0].positive_count, 2);
+            assert_eq!(cfg.flippers()[0].negative_count, 1);
         }
     }
 

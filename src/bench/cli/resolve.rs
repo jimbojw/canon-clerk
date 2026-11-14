@@ -15,6 +15,7 @@
 //! Flag and environment fallback resolution for [`super::ConsistencyBenchCli`].
 
 use super::{ConsistencyBenchCli, ConsistencyBenchFormat};
+use crate::admit::ENV_ADMIT_THRESHOLD;
 use crate::apprise::ENV_APPRISE_THRESHOLD;
 use crate::bench::{
     BenchmarkStage, ConsistencyBenchError, DEFAULT_BENCHMARK_TRIALS, ENV_BENCH_FORMAT,
@@ -86,13 +87,13 @@ fn resolve_stage(
         return BenchmarkStage::from_str(raw, true).map_err(|_| {
             CliError::usage(format!(
                 "Invalid stage `{raw}` in `{ENV_BENCH_STAGE}`.\n  \
-                 Hint: Pass `--stage <apprise|docket>` or set `{ENV_BENCH_STAGE}=apprise`."
+                 Hint: Pass `--stage <apprise|docket|admit>` or set `{ENV_BENCH_STAGE}=apprise`."
             ))
         });
     }
     Err(CliError::usage(format!(
-        "Missing required benchmark `--stage <apprise|docket>`.\n  \
-         Hint: Pass `--stage apprise` or `--stage docket` (or set `{ENV_BENCH_STAGE}`)."
+        "Missing required benchmark `--stage <apprise|docket|admit>`.\n  \
+         Hint: Pass `--stage apprise`, `--stage docket`, or `--stage admit` (or set `{ENV_BENCH_STAGE}`)."
     )))
 }
 
@@ -142,7 +143,8 @@ fn resolve_threshold(
     let stage_env = match stage {
         BenchmarkStage::Apprise => Some(ENV_APPRISE_THRESHOLD),
         BenchmarkStage::Docket => Some(ENV_DOCKET_THRESHOLD),
-        BenchmarkStage::Admit | BenchmarkStage::Audit => None,
+        BenchmarkStage::Admit => Some(ENV_ADMIT_THRESHOLD),
+        BenchmarkStage::Audit => None,
     };
     for key in [Some(ENV_BENCH_THRESHOLD), stage_env].into_iter().flatten() {
         if let Some(raw) = env.get(key).map(|s| s.trim()).filter(|s| !s.is_empty()) {

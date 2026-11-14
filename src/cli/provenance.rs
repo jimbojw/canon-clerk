@@ -15,7 +15,8 @@
 //! Shared Pipeline Funnel Provenance watermarks and receipt line writers (`docs/architecture/scheduling.md` §6).
 
 use crate::caseload::{
-    Caseload, CaseloadDiscovery, CaseloadDocket, CaseloadIntake, CaseloadValidation, IntakeScope,
+    Caseload, CaseloadDiscovery, CaseloadDocket, CaseloadEvidence, CaseloadIntake,
+    CaseloadValidation, IntakeScope,
 };
 use std::io::Write;
 
@@ -34,6 +35,8 @@ pub enum StageDisposition {
     ValidationFailed,
     /// Downstream stage skipped because upstream `validate` failed (`exit 1`).
     SkippedValidationFailed,
+    /// Downstream stage skipped because upstream `docket` opened zero active cases (`active_docket` empty).
+    SkippedEmptyDocket,
 }
 
 pub(crate) fn glyph_for(disp: StageDisposition) -> &'static str {
@@ -42,7 +45,8 @@ pub(crate) fn glyph_for(disp: StageDisposition) -> &'static str {
         StageDisposition::PrePopulated => "↷",
         StageDisposition::ZeroCandidateShortCircuit
         | StageDisposition::SkippedZeroCandidates
-        | StageDisposition::SkippedValidationFailed => "⊘",
+        | StageDisposition::SkippedValidationFailed
+        | StageDisposition::SkippedEmptyDocket => "⊘",
         StageDisposition::ValidationFailed => "✗",
     }
 }
@@ -207,6 +211,21 @@ pub(crate) fn write_configure_provenance(
     }
 }
 
+/// Writes the `configure` provenance line when `configure` was not needed because `.docket` was pre-populated empty.
+pub(crate) fn write_admit_configure_provenance(
+    caseload: &Caseload,
+    disp: StageDisposition,
+    stdout: &mut dyn Write,
+) -> std::io::Result<()> {
+    if disp == StageDisposition::SkippedEmptyDocket {
+        return writeln!(
+            stdout,
+            "  ⊘ configure : (fast-forward: empty active docket)"
+        );
+    }
+    write_configure_provenance(caseload, disp, stdout)
+}
+
 /// Writes the `docket` provenance line across contentious cascade closures (`docket`, `admit`, `audit`).
 pub(crate) fn write_docket_provenance(
     docket: Option<&CaseloadDocket>,
@@ -239,6 +258,54 @@ pub(crate) fn write_docket_provenance(
             writeln!(
                 stdout,
                 "  {glyph} docket    : {docketed} case(s) colorable ({dismissed} dismissed, threshold {threshold:.2}){suffix}"
+            )
+        }
+    }
+}
+
+/// Writes the `admit` provenance line across contentious cascade closures (`admit`, `audit`).
+pub(crate) fn write_admit_provenance(
+    evidence: Option<&CaseloadEvidence>,
+    disp: StageDisposition,
+    threshold: f64,
+    stdout: &mut dyn Write,
+) -> std::io::Result<()> {
+    match disp {
+        StageDisposition::SkippedZeroCandidates => {
+            writeln!(
+                stdout,
+                "  ⊘ admit     : (fast-forward: zero candidate canons)"
+            )
+        }
+        StageDisposition::SkippedValidationFailed => {
+            writeln!(
+                stdout,
+                "  ⊘ admit     : (fast-forward: canon validation failed)"
+            )
+        }
+        StageDisposition::SkippedEmptyDocket => {
+            writeln!(
+                stdout,
+                "  ⊘ admit     : (fast-forward: empty active docket)"
+            )
+        }
+        _ => {
+            let suffix = fast_forward_suffix(disp);
+            let (admitted, excluded, active_cases) = evidence.map_or((0, 0, 0), |ev| {
+                (
+                    ev.admitted_exhibit_count(),
+                    ev.excluded_exhibit_count(),
+                    ev.active_cases.len(),
+                )
+            });
+            let glyph = if admitted == 0 && disp == StageDisposition::Executed {
+                "⊘"
+            } else {
+                glyph_for(disp)
+            };
+            writeln!(
+                stdout,
+                "  {glyph} admit     : {admitted} exhibit(s) admitted across {active_cases} case(s) ({excluded} excluded, threshold {threshold:.2}){suffix}"
             )
         }
     }

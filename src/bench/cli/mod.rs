@@ -241,7 +241,7 @@ pub fn run_consistency_bench_cli(
     let intake_opts = cli.filing.resolve_intake_options(streams.stdin)?;
     let configure_opts = resolve_branch_b_options(&cli.provider, &env_map)?;
 
-    let snapshot = materialize_disk_snapshot(&cwd, &cli.canons.canon, incoming.as_ref())?;
+    let mut snapshot = materialize_disk_snapshot(&cwd, &cli.canons.canon, incoming.as_ref())?;
     let caseload = prepare_upstream_caseload(&UpstreamCaseloadInputs {
         stage: resolved.stage,
         intake_opts: &intake_opts,
@@ -251,6 +251,11 @@ pub fn run_consistency_bench_cli(
         workspace: &snapshot,
     })
     .map_err(map_bench_error)?;
+    if resolved.stage == BenchmarkStage::Admit
+        && let Some(disc) = &caseload.discovery
+    {
+        snapshot.populate_file_contents_from_disk(&cwd, &disc.target_files);
+    }
 
     let specs = resolve_config_specs(&ConfigSweepInputs {
         stage: resolved.stage,

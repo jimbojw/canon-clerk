@@ -14,6 +14,7 @@
 
 //! Canon Clerk CLI driving adapter and subcommand router.
 
+pub mod admit;
 pub mod apprise;
 pub mod args;
 mod closure;
@@ -28,6 +29,10 @@ pub mod runners;
 pub mod telemetry;
 pub mod validate;
 
+pub use admit::{
+    AdmitArgs, AdmitFormat, run_admit, run_admit_live_with_telemetry,
+    run_admit_with_snapshot_and_provider, run_admit_with_telemetry,
+};
 pub use apprise::{
     AppriseArgs, AppriseFormat, run_apprise, run_apprise_live_with_telemetry,
     run_apprise_with_snapshot_and_provider, run_apprise_with_telemetry,
@@ -150,6 +155,8 @@ pub enum Commands {
     Apprise(AppriseArgs),
     /// Macro jurisdiction triage: screen candidate canons to open active cases on the docket.
     Docket(DocketArgs),
+    /// Micro evidentiary triage: screen candidate file and metadata exhibits per active case.
+    Admit(AdmitArgs),
 }
 
 impl Commands {
@@ -161,7 +168,8 @@ impl Commands {
             | Self::Configure(_)
             | Self::Probe(_)
             | Self::Apprise(_)
-            | Self::Docket(_) => false,
+            | Self::Docket(_)
+            | Self::Admit(_) => false,
         }
     }
 }
@@ -337,6 +345,9 @@ fn dispatch_subcommand(
         Commands::Docket(args) => {
             run_docket_live_with_telemetry(args, stdin, stdout, session)?;
         }
+        Commands::Admit(args) => {
+            run_admit_live_with_telemetry(args, stdin, stdout, session)?;
+        }
     }
     Ok(())
 }
@@ -418,7 +429,8 @@ mod tests {
                     | Commands::Configure(_)
                     | Commands::Probe(_)
                     | Commands::Apprise(_)
-                    | Commands::Docket(_),
+                    | Commands::Docket(_)
+                    | Commands::Admit(_),
                 )
                 | None => {
                     panic!("expected Intake subcommand")
