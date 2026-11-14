@@ -43,6 +43,28 @@ pub(super) struct AuditWatermarks {
     pub audit_threshold: f64,
 }
 
+impl AuditWatermarks {
+    pub(super) const fn pre_populated(
+        docket_threshold: f64,
+        admit_threshold: f64,
+        audit_threshold: f64,
+    ) -> Self {
+        Self {
+            intake: StageDisposition::PrePopulated,
+            discover: StageDisposition::PrePopulated,
+            validate: StageDisposition::PrePopulated,
+            configure: StageDisposition::PrePopulated,
+            docket: StageDisposition::PrePopulated,
+            admit: StageDisposition::PrePopulated,
+            audit: StageDisposition::PrePopulated,
+            total_workspace_canons: None,
+            docket_threshold,
+            admit_threshold,
+            audit_threshold,
+        }
+    }
+}
+
 pub(super) fn resolve_effective_format(
     args: &AuditArgs,
     env: &BTreeMap<String, String>,

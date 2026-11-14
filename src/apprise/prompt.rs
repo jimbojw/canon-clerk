@@ -151,7 +151,12 @@ fn append_scope_section(out: &mut String, intake: &CaseloadIntake, discovery: &C
     out.push('\n');
 }
 
-fn append_canon_section(out: &mut String, canon_ref: &str, canon: &Canon, matched: &[String]) {
+pub(super) fn append_canon_section(
+    out: &mut String,
+    canon_ref: &str,
+    canon: &Canon,
+    matched: &[String],
+) {
     let _ = writeln!(out, "### Canon: `{canon_ref}`");
     let _ = writeln!(out, "- ID: `{}`", canon.id);
     let _ = writeln!(out, "- Title: {}", canon.title);

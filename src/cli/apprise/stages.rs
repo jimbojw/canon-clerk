@@ -23,11 +23,11 @@ use crate::cli::args::CanonSelectionArgs;
 use crate::cli::closure::{ClosureBackend, merge_metadata_onto_intake};
 use crate::cli::provenance::StageDisposition;
 use crate::cli::runners::{
-    map_discover_error, resolve_branch_b_options, resolve_gemini_api_key, run_branch_b_configure,
+    build_live_model_provider, map_discover_error, resolve_branch_b_options, run_branch_b_configure,
 };
 use crate::discover::{DiscoverOptions, WorkspaceSnapshot, execute_discover};
 use crate::intake::{IntakeError, IntakeOptions, execute_intake};
-use crate::provider::{DEFAULT_GENERATION_TIMEOUT_MS, GeminiModelProvider};
+use crate::provider::DEFAULT_GENERATION_TIMEOUT_MS;
 use crate::telemetry::{PipelineStage, TelemetrySession};
 use std::collections::BTreeMap;
 
@@ -141,7 +141,14 @@ pub(super) fn execute_jit_configure_and_apprise(
     caseload.apprisal = None;
 
     let configured = run_branch_b_configure(&configure_options, Some(caseload), telemetry)?;
-    let api_key = resolve_gemini_api_key(&configure_options)?;
+    let cfg_snapshot = configured.config.clone().unwrap_or_default();
+    let live_provider = match backend {
+        ClosureBackend::Hermetic { .. } => None,
+        ClosureBackend::LiveDisk { .. } => Some(build_live_model_provider(
+            &configure_options,
+            &cfg_snapshot,
+        )?),
+    };
     let apprise_opts = AppriseOptions {
         threshold,
         timeout_ms: DEFAULT_GENERATION_TIMEOUT_MS,
@@ -156,8 +163,10 @@ pub(super) fn execute_jit_configure_and_apprise(
                 execute_apprise(&apprise_opts, configured, snapshot, &instrumented)
             }
             ClosureBackend::LiveDisk { .. } => {
-                let live_provider = GeminiModelProvider::new(api_key);
-                let instrumented = scope.instrument_provider(&live_provider);
+                let active = live_provider
+                    .as_ref()
+                    .ok_or(crate::apprise::AppriseError::MissingConfig)?;
+                let instrumented = scope.instrument_provider(active);
                 execute_apprise(&apprise_opts, configured, snapshot, &instrumented)
             }
         })

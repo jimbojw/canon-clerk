@@ -15,7 +15,10 @@
 //! Guarded Branch A, JIT Branch B, and `docket` → `admit` → `audit` execution steps for `canon-clerk audit`.
 
 use super::AuditArgs;
-use super::guards::{has_admit_cli_overrides, has_docket_cli_overrides, resolve_audit_concurrency};
+use super::guards::{
+    has_admit_cli_overrides, has_docket_cli_overrides, resolve_audit_concurrency,
+    resolve_audit_fastpass_threshold,
+};
 use crate::admit::{AdmitOptions, execute_admit};
 use crate::audit::{
     AuditOptions, DEFAULT_AUDIT_TIMEOUT_MS, execute_audit, resolve_canon_reference_paths,
@@ -28,14 +31,12 @@ use crate::cli::closure::{ClosureBackend, has_provider_overrides, merge_metadata
 use crate::cli::docket::guards::{resolve_docket_batch_size, resolve_docket_concurrency};
 use crate::cli::provenance::StageDisposition;
 use crate::cli::runners::{
-    map_discover_error, resolve_branch_b_options, resolve_gemini_api_key, run_branch_b_configure,
+    build_live_model_provider, map_discover_error, resolve_branch_b_options, run_branch_b_configure,
 };
 use crate::discover::{DiscoverOptions, WorkspaceSnapshot, execute_discover};
 use crate::docket::{DocketOptions, execute_docket};
 use crate::intake::{IntakeError, IntakeOptions, execute_intake};
-use crate::provider::{
-    DEFAULT_GENERATION_TIMEOUT_MS, GeminiModelProvider, StructuredModelProvider,
-};
+use crate::provider::{DEFAULT_GENERATION_TIMEOUT_MS, StructuredModelProvider};
 use crate::telemetry::{PipelineStage, TelemetrySession};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -239,6 +240,7 @@ pub(super) fn execute_jit_configure_docket_admit_and_audit(
     };
     let audit_opts = AuditOptions {
         threshold: thresholds.audit_threshold,
+        fastpass_threshold: resolve_audit_fastpass_threshold(args.audit_fastpass_threshold, env)?,
         timeout_ms: DEFAULT_AUDIT_TIMEOUT_MS,
         max_concurrent_calls: resolve_audit_concurrency(args.audit_concurrency, env, stored)?,
     };
@@ -248,12 +250,12 @@ pub(super) fn execute_jit_configure_docket_admit_and_audit(
     caseload.verdict = None;
 
     let configured = run_branch_b_configure(&configure_options, Some(caseload), telemetry)?;
-    let api_key = resolve_gemini_api_key(&configure_options)?;
+    let cfg_snapshot = configured.config.clone().unwrap_or_default();
     let live_instance;
     let active_provider: &dyn StructuredModelProvider = match backend {
         ClosureBackend::Hermetic { provider, .. } => *provider,
         ClosureBackend::LiveDisk { .. } => {
-            live_instance = GeminiModelProvider::new(api_key);
+            live_instance = build_live_model_provider(&configure_options, &cfg_snapshot)?;
             &live_instance
         }
     };

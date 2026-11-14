@@ -138,7 +138,7 @@ pub(super) fn build_admit_case_user_prompt(
     out
 }
 
-fn append_filing_overview(
+pub(super) fn append_filing_overview(
     out: &mut String,
     intake: &CaseloadIntake,
     discovery: &CaseloadDiscovery,
@@ -168,7 +168,7 @@ fn append_filing_overview(
     out.push('\n');
 }
 
-fn append_governing_canon_section(out: &mut String, canon_ref: &str, canon: &Canon) {
+pub(super) fn append_governing_canon_section(out: &mut String, canon_ref: &str, canon: &Canon) {
     let _ = writeln!(out, "## Active Case Governing Canon: `{canon_ref}`");
     let _ = writeln!(out, "- ID: `{}`", canon.id);
     let _ = writeln!(out, "- Title: {}", canon.title);

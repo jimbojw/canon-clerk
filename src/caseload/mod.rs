@@ -27,7 +27,10 @@ mod verdict;
 pub use apprisal::{
     ApprisalStatus, CanonApprisalAssessment, CaseloadApprisal, normalize_unit_score,
 };
-pub use config::{CaseloadConfig, DEFAULT_AUDITOR_MODEL, DEFAULT_PROVIDER, DEFAULT_SCREENER_MODEL};
+pub use config::{
+    CaseloadConfig, DEFAULT_AUDITOR_MODEL, DEFAULT_PROVIDER, DEFAULT_SCREENER_MODEL,
+    TYPESAFE_PROVIDER,
+};
 pub use discovery::{ActiveExhibits, CaseloadDiscovery, DiscoveryMode};
 pub use docket::{
     CanonDocketAssessment, CaseloadDocket, ColorabilityStatus, normalize_colorability_score,

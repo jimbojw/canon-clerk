@@ -24,12 +24,12 @@ use crate::cli::closure::{ClosureBackend, has_provider_overrides, merge_metadata
 use crate::cli::docket::guards::{resolve_docket_batch_size, resolve_docket_concurrency};
 use crate::cli::provenance::StageDisposition;
 use crate::cli::runners::{
-    map_discover_error, resolve_branch_b_options, resolve_gemini_api_key, run_branch_b_configure,
+    build_live_model_provider, map_discover_error, resolve_branch_b_options, run_branch_b_configure,
 };
 use crate::discover::{DiscoverOptions, WorkspaceSnapshot, execute_discover};
 use crate::docket::{DocketOptions, execute_docket};
 use crate::intake::{IntakeError, IntakeOptions, execute_intake};
-use crate::provider::{DEFAULT_GENERATION_TIMEOUT_MS, GeminiModelProvider};
+use crate::provider::{DEFAULT_GENERATION_TIMEOUT_MS, StructuredModelProvider};
 use crate::telemetry::{PipelineStage, TelemetrySession};
 use std::collections::BTreeMap;
 
@@ -132,6 +132,31 @@ pub(super) fn resolve_admit_discover(
     Ok((updated, StageDisposition::Executed))
 }
 
+fn try_pre_populated_empty_docket(
+    caseload: &Caseload,
+    docket_pre_populated: bool,
+) -> Option<CascadeOutcome> {
+    if docket_pre_populated
+        && caseload
+            .docket
+            .as_ref()
+            .is_some_and(|d| d.active_docket.is_empty())
+    {
+        let cfg_disp = if caseload.config.is_some() {
+            StageDisposition::PrePopulated
+        } else {
+            StageDisposition::SkippedEmptyDocket
+        };
+        return Some(CascadeOutcome {
+            caseload: caseload.clone().with_evidence(CaseloadEvidence::default()),
+            configure_disp: cfg_disp,
+            docket_disp: StageDisposition::PrePopulated,
+            admit_disp: StageDisposition::SkippedEmptyDocket,
+        });
+    }
+    None
+}
+
 pub(super) fn execute_jit_configure_docket_and_admit(
     args: &AdmitArgs,
     env: &BTreeMap<String, String>,
@@ -145,23 +170,8 @@ pub(super) fn execute_jit_configure_docket_and_admit(
         && !has_docket_cli_overrides(args)
         && !has_provider_overrides(&args.provider);
 
-    if docket_pre_populated
-        && caseload
-            .docket
-            .as_ref()
-            .is_some_and(|d| d.active_docket.is_empty())
-    {
-        let cfg_disp = if caseload.config.is_some() {
-            StageDisposition::PrePopulated
-        } else {
-            StageDisposition::SkippedEmptyDocket
-        };
-        return Ok(CascadeOutcome {
-            caseload: caseload.with_evidence(CaseloadEvidence::default()),
-            configure_disp: cfg_disp,
-            docket_disp: StageDisposition::PrePopulated,
-            admit_disp: StageDisposition::SkippedEmptyDocket,
-        });
+    if let Some(outcome) = try_pre_populated_empty_docket(&caseload, docket_pre_populated) {
+        return Ok(outcome);
     }
 
     let configure_options = resolve_branch_b_options(&args.provider, env)?;
@@ -186,7 +196,15 @@ pub(super) fn execute_jit_configure_docket_and_admit(
     caseload.evidence = None;
 
     let configured = run_branch_b_configure(&configure_options, Some(caseload), telemetry)?;
-    let api_key = resolve_gemini_api_key(&configure_options)?;
+    let cfg_snapshot = configured.config.clone().unwrap_or_default();
+    let live_instance;
+    let active_provider: &dyn StructuredModelProvider = match backend {
+        ClosureBackend::Hermetic { provider, .. } => *provider,
+        ClosureBackend::LiveDisk { .. } => {
+            live_instance = build_live_model_provider(&configure_options, &cfg_snapshot)?;
+            &live_instance
+        }
+    };
     let configure_disp = if config_was_present {
         StageDisposition::PrePopulated
     } else {
@@ -204,14 +222,8 @@ pub(super) fn execute_jit_configure_docket_and_admit(
             max_canons_per_call: docket_batch_size,
             max_concurrent_calls: docket_concurrency,
         };
-        let docketed = run_docket_stage(
-            &docket_opts,
-            cleared,
-            snapshot,
-            backend,
-            &api_key,
-            telemetry,
-        )?;
+        let docketed =
+            run_docket_stage(&docket_opts, cleared, snapshot, active_provider, telemetry)?;
         (docketed, StageDisposition::Executed)
     };
 
@@ -239,8 +251,7 @@ pub(super) fn execute_jit_configure_docket_and_admit(
         &admit_opts,
         after_docket,
         snapshot,
-        backend,
-        &api_key,
+        active_provider,
         telemetry,
     )?;
 
@@ -284,21 +295,13 @@ fn run_docket_stage(
     opts: &DocketOptions,
     caseload: Caseload,
     snapshot: &WorkspaceSnapshot,
-    backend: &ClosureBackend<'_>,
-    api_key: &str,
+    provider: &dyn StructuredModelProvider,
     telemetry: &TelemetrySession<'_>,
 ) -> Result<Caseload, CliError> {
     telemetry
-        .run_stage(PipelineStage::Docket, |scope| match backend {
-            ClosureBackend::Hermetic { provider, .. } => {
-                let instrumented = scope.instrument_provider(*provider);
-                execute_docket(opts, caseload, snapshot, &instrumented)
-            }
-            ClosureBackend::LiveDisk { .. } => {
-                let live_provider = GeminiModelProvider::new(api_key.to_string());
-                let instrumented = scope.instrument_provider(&live_provider);
-                execute_docket(opts, caseload, snapshot, &instrumented)
-            }
+        .run_stage(PipelineStage::Docket, |scope| {
+            let instrumented = scope.instrument_provider(provider);
+            execute_docket(opts, caseload, snapshot, &instrumented)
         })
         .map_err(|err| CliError::usage(err.to_string()))
 }
@@ -307,21 +310,13 @@ fn run_admit_stage(
     opts: &AdmitOptions,
     caseload: Caseload,
     snapshot: &WorkspaceSnapshot,
-    backend: &ClosureBackend<'_>,
-    api_key: &str,
+    provider: &dyn StructuredModelProvider,
     telemetry: &TelemetrySession<'_>,
 ) -> Result<Caseload, CliError> {
     telemetry
-        .run_stage(PipelineStage::Admit, |scope| match backend {
-            ClosureBackend::Hermetic { provider, .. } => {
-                let instrumented = scope.instrument_provider(*provider);
-                execute_admit(opts, caseload, snapshot, &instrumented)
-            }
-            ClosureBackend::LiveDisk { .. } => {
-                let live_provider = GeminiModelProvider::new(api_key.to_string());
-                let instrumented = scope.instrument_provider(&live_provider);
-                execute_admit(opts, caseload, snapshot, &instrumented)
-            }
+        .run_stage(PipelineStage::Admit, |scope| {
+            let instrumented = scope.instrument_provider(provider);
+            execute_admit(opts, caseload, snapshot, &instrumented)
         })
         .map_err(|err| CliError::usage(err.to_string()))
 }

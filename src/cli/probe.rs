@@ -18,10 +18,11 @@ use crate::caseload::{Caseload, CaseloadProbe, ProbeEndpointResult, ProbeStatus}
 use crate::cli::CliError;
 use crate::cli::args::{CaseloadIoArgs, ProviderConfigArgs};
 use crate::cli::runners::{
-    resolve_branch_b_options, resolve_gemini_api_key, run_branch_b_configure,
+    resolve_branch_b_options, resolve_gemini_api_key, resolve_typesafe_api_key,
+    run_branch_b_configure,
 };
 use crate::probe::{
-    DEFAULT_PROBE_TIMEOUT_MS, ENV_PROBE_TIMEOUT_MS, EndpointProber, GeminiEndpointProber,
+    DEFAULT_PROBE_TIMEOUT_MS, ENV_PROBE_TIMEOUT_MS, EndpointProber, MultiProviderEndpointProber,
     ProbeOptions, execute_probe,
 };
 use crate::telemetry::{PipelineStage, TelemetrySession};
@@ -37,6 +38,9 @@ Examples:
 
   # Emit structured Caseload JSON with .config and .probe records:
   canon-clerk probe --json
+
+  # Probe TypeSafe Jev screener alongside Gemini Pro auditor:
+  canon-clerk probe --screener-model jev
 
   # Override timeout and model tiers for diagnostic verification:
   canon-clerk probe --timeout 3000 --screener-model flash-lite --auditor-model pro";
@@ -57,7 +61,7 @@ pub enum ProbeFormat {
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 #[command(
     about = "Verify live connectivity, credentials, and roundtrip latency for configured model endpoints",
-    long_about = "Diagnostic Network Health Check of the Caseload DAG (Branch B leaf). Executes the [configure, probe] closure by resolving provider credentials and concurrently probing both `.config.screener_model` and `.config.auditor_model` via minimal POST :generateContent requests, recording non-throwing diagnostics on `.probe`.",
+    long_about = "Diagnostic Network Health Check of the Caseload DAG (Branch B leaf). Executes the [configure, probe] closure by resolving active provider credentials and concurrently probing both `.config.screener_model` and `.config.auditor_model` via lightweight provider pings, recording non-throwing diagnostics on `.probe`.",
     after_help = PROBE_EXAMPLES
 )]
 pub struct ProbeArgs {
@@ -107,9 +111,11 @@ pub fn run_probe_with_telemetry(
         existing.clone()
     } else {
         let configured = run_branch_b_configure(&configure_options, incoming_caseload, telemetry)?;
-        let api_key = resolve_gemini_api_key(&configure_options)?;
+        let api_key = resolve_gemini_api_key(&configure_options).unwrap_or_default();
+        let typesafe_api_key = resolve_typesafe_api_key(&configure_options).ok();
         let probe_options = ProbeOptions {
             api_key,
+            typesafe_api_key,
             timeout_ms,
         };
         telemetry.run_stage(PipelineStage::Probe, |_scope| {
@@ -142,14 +148,14 @@ pub fn run_probe_with_env_and_prober(
     run_probe_with_telemetry(args, stdin, stdout, env, prober, &TelemetrySession::noop())
 }
 
-/// Executes the `probe` CLI subcommand using the process environment and live [`GeminiEndpointProber`].
+/// Executes the `probe` CLI subcommand using the process environment and live [`MultiProviderEndpointProber`].
 pub fn run_probe(
     args: &ProbeArgs,
     stdin: &mut dyn Read,
     stdout: &mut dyn Write,
 ) -> Result<Caseload, CliError> {
     let env: BTreeMap<String, String> = env::vars().collect();
-    let prober = GeminiEndpointProber::new();
+    let prober = MultiProviderEndpointProber::new();
     run_probe_with_env_and_prober(args, stdin, stdout, &env, &prober)
 }
 
@@ -346,7 +352,7 @@ mod tests {
             _api_key: &str,
             _timeout_ms: u64,
         ) -> ProbeEndpointResult {
-            if model_specifier.contains("flash") {
+            if model_specifier.contains("flash") || model_specifier.contains("jev") {
                 self.screener.clone()
             } else {
                 self.auditor.clone()
@@ -474,6 +480,42 @@ mod tests {
             let compact_str = String::from_utf8(compact_out).expect("utf8");
             assert!(compact_str.contains("screener\tok\t88ms\tgemini-2.5-flash-lite"));
             assert!(compact_str.contains("auditor\tok\t194ms\tgemini-2.5-pro"));
+        }
+
+        #[test]
+        fn test_hybrid_typesafe_jev_probe_verifies_both_endpoints_without_key_leakage() {
+            let ts_secret = "synthetic-typesafe-probe-secret-888";
+            let prober = MockProber {
+                screener: ProbeEndpointResult {
+                    status: ProbeStatus::Ok,
+                    latency_ms: 99,
+                    model: "jev-1.14.0".to_string(),
+                    error: None,
+                },
+                auditor: MockProber::healthy().auditor,
+            };
+            let args = ProbeArgs {
+                provider: ProviderConfigArgs {
+                    screener_model: Some("jev".to_string()),
+                    typesafe_api_key: Some(ts_secret.to_string()),
+                    ..ProviderConfigArgs::default()
+                },
+                format: ProbeFormat::Stylish,
+                ..ProbeArgs::default()
+            };
+            let mut stdout = Vec::new();
+            let caseload = run_probe_with_env_and_prober(
+                &args,
+                &mut Cursor::new(b""),
+                &mut stdout,
+                &test_env(),
+                &prober,
+            )
+            .expect("hybrid probe should succeed");
+            let rendered = String::from_utf8(stdout).expect("utf8");
+            assert!(rendered.contains("jev-1.14.0"));
+            assert!(!rendered.contains(ts_secret));
+            assert!(caseload.probe.expect("probe").is_healthy());
         }
     }
 

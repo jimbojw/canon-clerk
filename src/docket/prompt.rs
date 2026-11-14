@@ -85,7 +85,34 @@ pub(super) fn build_docket_filing_prefix(
 ) -> String {
     let mut out = String::new();
     append_filing_metadata_section(&mut out, intake, discovery);
-    append_file_exhibits_section(&mut out, intake, discovery);
+    append_file_exhibits_section(&mut out, intake, discovery, MAX_MACRO_PATCH_CHARS, None);
+    out
+}
+
+/// Assembles a context-bounded filing prefix for discriminative screening models (`typesafe:jev-*`),
+/// dividing `max_state_chars` fairly across modified file patches so every modified file header and
+/// diff preview remains visible within bounded context windows.
+pub(super) fn build_bounded_docket_filing_prefix(
+    intake: &CaseloadIntake,
+    discovery: &CaseloadDiscovery,
+    max_state_chars: usize,
+) -> String {
+    let mut out = String::new();
+    append_filing_metadata_section(&mut out, intake, discovery);
+    if out.len() > max_state_chars / 2 {
+        out = truncate_chars(&out, max_state_chars / 2);
+        out.push('\n');
+    }
+    let remaining = max_state_chars.saturating_sub(out.len()).max(2_048);
+    let file_count = intake.diffs.len().max(1);
+    let per_file_cap = (remaining / file_count).clamp(160, MAX_MACRO_PATCH_CHARS);
+    append_file_exhibits_section(
+        &mut out,
+        intake,
+        discovery,
+        per_file_cap,
+        Some(max_state_chars),
+    );
     out
 }
 
@@ -177,6 +204,8 @@ fn append_file_exhibits_section(
     out: &mut String,
     intake: &CaseloadIntake,
     discovery: &CaseloadDiscovery,
+    per_file_patch_cap: usize,
+    total_char_ceiling: Option<usize>,
 ) {
     if intake.diffs.is_empty() {
         return;
@@ -201,11 +230,17 @@ fn append_file_exhibits_section(
 
     let _ = writeln!(out, "## Modified File Exhibits ({})\n", selected.len());
     for artifact in selected {
-        append_single_file_exhibit(out, artifact);
+        let include_patch = total_char_ceiling.is_none_or(|cap| out.len() < cap);
+        append_single_file_exhibit(out, artifact, per_file_patch_cap, include_patch);
     }
 }
 
-fn append_single_file_exhibit(out: &mut String, artifact: &FileArtifact) {
+fn append_single_file_exhibit(
+    out: &mut String,
+    artifact: &FileArtifact,
+    per_file_patch_cap: usize,
+    include_patch: bool,
+) {
     match &artifact.previous_path {
         Some(prev) => {
             let _ = writeln!(
@@ -230,14 +265,19 @@ fn append_single_file_exhibit(out: &mut String, artifact: &FileArtifact) {
         }
     }
 
-    if let Some(patch) = non_blank(artifact.patch.as_deref()) {
-        let bounded = truncate_chars(patch, MAX_MACRO_PATCH_CHARS);
+    if include_patch && let Some(patch) = non_blank(artifact.patch.as_deref()) {
+        let bounded = truncate_chars(patch, per_file_patch_cap);
         let _ = writeln!(out, "```diff\n{bounded}\n```");
     }
     out.push('\n');
 }
 
-fn append_canon_section(out: &mut String, canon_ref: &str, canon: &Canon, matched: &[String]) {
+pub(super) fn append_canon_section(
+    out: &mut String,
+    canon_ref: &str,
+    canon: &Canon,
+    matched: &[String],
+) {
     let _ = writeln!(out, "### Canon: `{canon_ref}`");
     let _ = writeln!(out, "- ID: `{}`", canon.id);
     let _ = writeln!(out, "- Title: {}", canon.title);

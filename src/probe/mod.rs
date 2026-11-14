@@ -14,14 +14,22 @@
 
 //! Core domain execution engine and hexagonal endpoint prober for the `probe` diagnostic stage (`docs/architecture/nodes/probe.md`).
 
-use crate::caseload::{Caseload, CaseloadProbe, ProbeEndpointResult, ProbeStatus};
-use crate::configure::ENV_GEMINI_API_KEY;
+use crate::caseload::{
+    Caseload, CaseloadProbe, ProbeEndpointResult, ProbeStatus, TYPESAFE_PROVIDER,
+};
+use crate::configure::{ENV_GEMINI_API_KEY, ENV_TYPESAFE_API_KEY, model_provider};
 use crate::provider::gemini::post_gemini_json;
 pub use crate::provider::{
-    DEFAULT_GEMINI_BASE_URL, build_generate_content_url, strip_provider_prefix,
+    DEFAULT_GEMINI_BASE_URL, DEFAULT_TYPESAFE_BASE_URL, build_generate_content_url,
+    strip_provider_prefix,
 };
-use crate::provider::{classify_gemini_http_error, extract_gemini_error_detail};
+use crate::provider::{
+    TypesafeNoulQuestion, TypesafeSystemOneRequest, TypesafeSystemOneResponse,
+    classify_gemini_http_error, classify_typesafe_http_error, extract_gemini_error_detail,
+    extract_typesafe_error_detail, post_typesafe_json, strip_typesafe_prefix,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// Default per-endpoint timeout in milliseconds for `canon-clerk probe` (`docs/architecture/nodes/probe.md` §5).
@@ -33,8 +41,10 @@ pub const ENV_PROBE_TIMEOUT_MS: &str = "CANON_CLERK_PROBE_TIMEOUT_MS";
 /// Domain input parameters for executing the `probe` Caseload DAG stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeOptions {
-    /// Google Gemini API key used to authenticate probe requests.
+    /// Google Gemini API key used to authenticate `google:*` probe requests.
     pub api_key: String,
+    /// Optional TypeSafe AI API key used to authenticate `typesafe:*` probe requests.
+    pub typesafe_api_key: Option<String>,
     /// Per-endpoint request timeout in milliseconds (defaults to [`DEFAULT_PROBE_TIMEOUT_MS`]).
     pub timeout_ms: u64,
 }
@@ -43,6 +53,7 @@ impl Default for ProbeOptions {
     fn default() -> Self {
         Self {
             api_key: String::new(),
+            typesafe_api_key: None,
             timeout_ms: DEFAULT_PROBE_TIMEOUT_MS,
         }
     }
@@ -53,8 +64,10 @@ impl Default for ProbeOptions {
 pub enum ProbeError {
     /// Incoming `Caseload` is missing the `.config` prerequisite namespace.
     MissingConfig,
-    /// API key in `ProbeOptions` is empty or whitespace.
+    /// Required Google Gemini API key in `ProbeOptions` is empty or whitespace.
     MissingApiKey,
+    /// Required TypeSafe AI API key in `ProbeOptions` is missing, empty, or whitespace.
+    MissingTypesafeApiKey,
     /// Timeout budget in `ProbeOptions` is zero (`0ms`).
     InvalidTimeout { timeout_ms: u64 },
 }
@@ -73,6 +86,13 @@ impl fmt::Display for ProbeError {
                  Hint: Export `{ENV_GEMINI_API_KEY}=\"<your-api-key>\"`, configure \
                  `providers.google.apiKey` in `~/.config/canon-clerk/config.json` (mode `0600`), \
                  or pass `--gemini-api-key <KEY>`."
+            ),
+            Self::MissingTypesafeApiKey => write!(
+                f,
+                "Missing required TypeSafe AI API key (`{ENV_TYPESAFE_API_KEY}`) for endpoint probing.\n  \
+                 Hint: Export `{ENV_TYPESAFE_API_KEY}=\"<your-api-key>\"`, configure \
+                 `providers.typesafe.apiKey` in `~/.config/canon-clerk/config.json` (mode `0600`), \
+                 or pass `--typesafe-api-key <KEY>`."
             ),
             Self::InvalidTimeout { timeout_ms } => write!(
                 f,
@@ -120,23 +140,20 @@ pub fn execute_probe(
         });
     }
 
-    let api_key = options.api_key.trim();
-    if api_key.is_empty() {
-        return Err(ProbeError::MissingApiKey);
-    }
-
     let config = caseload.config.as_ref().ok_or(ProbeError::MissingConfig)?;
     let screener_spec = config.screener_model.clone();
     let auditor_spec = config.auditor_model.clone();
+    let screener_key = resolve_endpoint_probe_key(&screener_spec, options)?;
+    let auditor_key = resolve_endpoint_probe_key(&auditor_spec, options)?;
     let timeout_ms = options.timeout_ms;
 
     let (screener_result, auditor_result) = std::thread::scope(|scope| {
         let screener_ref = &screener_spec;
         let auditor_ref = &auditor_spec;
         let screener_handle =
-            scope.spawn(move || prober.probe_endpoint(screener_ref, api_key, timeout_ms));
+            scope.spawn(move || prober.probe_endpoint(screener_ref, screener_key, timeout_ms));
         let auditor_handle =
-            scope.spawn(move || prober.probe_endpoint(auditor_ref, api_key, timeout_ms));
+            scope.spawn(move || prober.probe_endpoint(auditor_ref, auditor_key, timeout_ms));
 
         let screener = screener_handle
             .join()
@@ -168,6 +185,27 @@ pub fn execute_probe(
         screener: screener_result,
         auditor: auditor_result,
     }))
+}
+
+fn resolve_endpoint_probe_key<'a>(
+    model_specifier: &str,
+    options: &'a ProbeOptions,
+) -> Result<&'a str, ProbeError> {
+    if model_provider(model_specifier) == TYPESAFE_PROVIDER {
+        options
+            .typesafe_api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or(ProbeError::MissingTypesafeApiKey)
+    } else {
+        let key = options.api_key.trim();
+        if key.is_empty() {
+            Err(ProbeError::MissingApiKey)
+        } else {
+            Ok(key)
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -297,6 +335,140 @@ impl EndpointProber for GeminiEndpointProber {
                 model: model_specifier.to_string(),
                 error: Some(err.to_string()),
             },
+        }
+    }
+}
+
+/// Decodes and classifies an HTTP status code and response payload from a TypeSafe AI `/v1/systemone` probe.
+fn decode_typesafe_probe_response(
+    status_code: u16,
+    body: &str,
+    model_specifier: &str,
+    latency_ms: u64,
+) -> ProbeEndpointResult {
+    if (200..300).contains(&status_code) {
+        let resolved_model = serde_json::from_str::<TypesafeSystemOneResponse>(body)
+            .ok()
+            .and_then(|resp| resp.model)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| model_specifier.to_string());
+
+        return ProbeEndpointResult {
+            status: ProbeStatus::Ok,
+            latency_ms,
+            model: resolved_model,
+            error: None,
+        };
+    }
+
+    let upstream_detail = extract_typesafe_error_detail(body);
+    let diagnostic = classify_typesafe_http_error(status_code, model_specifier, &upstream_detail);
+    ProbeEndpointResult {
+        status: ProbeStatus::Error,
+        latency_ms,
+        model: model_specifier.to_string(),
+        error: Some(diagnostic),
+    }
+}
+
+/// Live TypeSafe AI HTTPS implementation of [`EndpointProber`] (`POST /v1/systemone`).
+#[derive(Debug, Clone)]
+pub struct TypesafeEndpointProber {
+    base_url: String,
+}
+
+impl Default for TypesafeEndpointProber {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TypesafeEndpointProber {
+    /// Constructs a new live [`TypesafeEndpointProber`] targeting [`DEFAULT_TYPESAFE_BASE_URL`].
+    pub fn new() -> Self {
+        Self {
+            base_url: DEFAULT_TYPESAFE_BASE_URL.to_string(),
+        }
+    }
+
+    /// Constructs a [`TypesafeEndpointProber`] with a custom base URL.
+    pub fn with_base_url(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+        }
+    }
+}
+
+impl EndpointProber for TypesafeEndpointProber {
+    fn probe_endpoint(
+        &self,
+        model_specifier: &str,
+        api_key: &str,
+        timeout_ms: u64,
+    ) -> ProbeEndpointResult {
+        let mut questions = BTreeMap::new();
+        questions.insert(
+            "ping".to_string(),
+            TypesafeNoulQuestion::new("Is the input non-empty?"),
+        );
+        let payload = TypesafeSystemOneRequest {
+            model: strip_typesafe_prefix(model_specifier).to_string(),
+            state: "ping".to_string(),
+            questions,
+        };
+
+        match post_typesafe_json(
+            &self.base_url,
+            model_specifier,
+            api_key,
+            timeout_ms,
+            &payload,
+        ) {
+            Ok(outcome) => decode_typesafe_probe_response(
+                outcome.status_code,
+                &outcome.body,
+                model_specifier,
+                outcome.latency_ms,
+            ),
+            Err((err, latency_ms)) => ProbeEndpointResult {
+                status: ProbeStatus::Error,
+                latency_ms,
+                model: model_specifier.to_string(),
+                error: Some(err.to_string()),
+            },
+        }
+    }
+}
+
+/// Composite live [`EndpointProber`] routing `google:*` specifiers to [`GeminiEndpointProber`]
+/// and `typesafe:*` specifiers to [`TypesafeEndpointProber`].
+#[derive(Debug, Clone, Default)]
+pub struct MultiProviderEndpointProber {
+    gemini: GeminiEndpointProber,
+    typesafe: TypesafeEndpointProber,
+}
+
+impl MultiProviderEndpointProber {
+    /// Constructs a new [`MultiProviderEndpointProber`] targeting default Gemini and TypeSafe endpoints.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl EndpointProber for MultiProviderEndpointProber {
+    fn probe_endpoint(
+        &self,
+        model_specifier: &str,
+        api_key: &str,
+        timeout_ms: u64,
+    ) -> ProbeEndpointResult {
+        if model_provider(model_specifier) == TYPESAFE_PROVIDER {
+            self.typesafe
+                .probe_endpoint(model_specifier, api_key, timeout_ms)
+        } else {
+            self.gemini
+                .probe_endpoint(model_specifier, api_key, timeout_ms)
         }
     }
 }
@@ -465,6 +637,7 @@ mod tests {
             let caseload = Caseload::new().with_config(CaseloadConfig::default());
             let opts = ProbeOptions {
                 api_key: "synthetic-test-key".to_string(),
+                typesafe_api_key: None,
                 timeout_ms: DEFAULT_PROBE_TIMEOUT_MS,
             };
 
@@ -506,6 +679,7 @@ mod tests {
             let caseload = Caseload::new().with_config(CaseloadConfig::default());
             let opts = ProbeOptions {
                 api_key: "synthetic-test-key".to_string(),
+                typesafe_api_key: None,
                 timeout_ms: DEFAULT_PROBE_TIMEOUT_MS,
             };
 
@@ -560,6 +734,7 @@ mod tests {
             let err_cfg = execute_probe(
                 &ProbeOptions {
                     api_key: "key".to_string(),
+                    typesafe_api_key: None,
                     timeout_ms: 1000,
                 },
                 &prober,
@@ -573,6 +748,7 @@ mod tests {
             let err_key = execute_probe(
                 &ProbeOptions {
                     api_key: "   ".to_string(),
+                    typesafe_api_key: None,
                     timeout_ms: 1000,
                 },
                 &prober,
@@ -584,6 +760,7 @@ mod tests {
             let err_timeout = execute_probe(
                 &ProbeOptions {
                     api_key: "key".to_string(),
+                    typesafe_api_key: None,
                     timeout_ms: 0,
                 },
                 &prober,
@@ -604,6 +781,7 @@ mod tests {
             let enriched = execute_probe(
                 &ProbeOptions {
                     api_key: "valid-key".to_string(),
+                    typesafe_api_key: None,
                     timeout_ms: 2500,
                 },
                 &prober,
@@ -615,6 +793,36 @@ mod tests {
             assert_eq!(enriched.validation, full_upstream.validation);
             assert_eq!(enriched.config, full_upstream.config);
             assert!(enriched.probe.is_some());
+
+            // Hybrid screener=typesafe:jev-latest + auditor=google:gemini-pro-latest requires typesafe_api_key
+            let hybrid_cfg = Caseload::new().with_config(CaseloadConfig {
+                screener_model: "typesafe:jev-latest".to_string(),
+                auditor_model: DEFAULT_AUDITOR_MODEL.to_string(),
+                reasoning_budget: None,
+            });
+            let err_ts = execute_probe(
+                &ProbeOptions {
+                    api_key: "valid-google-key".to_string(),
+                    typesafe_api_key: None,
+                    timeout_ms: 2500,
+                },
+                &prober,
+                hybrid_cfg.clone(),
+            )
+            .expect_err("missing typesafe key must error");
+            assert_eq!(err_ts, ProbeError::MissingTypesafeApiKey);
+
+            let ok_hybrid = execute_probe(
+                &ProbeOptions {
+                    api_key: "valid-google-key".to_string(),
+                    typesafe_api_key: Some("valid-typesafe-key".to_string()),
+                    timeout_ms: 2500,
+                },
+                &prober,
+                hybrid_cfg,
+            )
+            .expect("hybrid probe with both keys");
+            assert!(ok_hybrid.probe.expect("probe").is_healthy());
         }
     }
 }

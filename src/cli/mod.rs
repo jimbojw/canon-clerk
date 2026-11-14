@@ -64,6 +64,7 @@ pub use probe::{
     ProbeArgs, ProbeFormat, run_probe, run_probe_with_env_and_prober, run_probe_with_telemetry,
 };
 pub use provenance::StageDisposition;
+pub(crate) use runners::build_live_model_provider;
 pub use runners::{
     map_discover_error, resolve_branch_b_options, resolve_gemini_api_key, run_branch_a_discover,
     run_branch_a_intake, run_branch_a_validate, run_branch_b_configure,
@@ -77,7 +78,7 @@ pub use validate::{
     run_validate_with_telemetry,
 };
 
-use crate::probe::GeminiEndpointProber;
+use crate::probe::MultiProviderEndpointProber;
 use crate::telemetry::{SystemTelemetryClock, TelemetrySession};
 use clap::{CommandFactory, Parser, Subcommand};
 use std::collections::BTreeMap;
@@ -344,7 +345,7 @@ fn dispatch_subcommand(
             run_configure_with_telemetry(args, stdin, stdout, env_map, session)?;
         }
         Commands::Probe(args) => {
-            let prober = GeminiEndpointProber::new();
+            let prober = MultiProviderEndpointProber::new();
             run_probe_with_telemetry(args, stdin, stdout, env_map, &prober, session)?;
         }
         Commands::Apprise(args) => {

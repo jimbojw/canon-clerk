@@ -17,7 +17,8 @@
 use super::clock::{NoopTelemetryClock, TelemetryClock};
 use super::{NoopTelemetrySink, PipelineStage, TelemetryEvent, TelemetrySink};
 use crate::provider::{
-    GenerationRequest, GenerationResponse, ProviderError, StructuredModelProvider, TokenUsage,
+    DecisionRequest, DecisionResponse, GenerationRequest, GenerationResponse, ProviderError,
+    StructuredModelProvider, TokenUsage,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
@@ -176,8 +177,16 @@ impl<'a> StageScope<'a> {
         self.record_usage(response.usage);
     }
 
-    /// Wraps a [`StructuredModelProvider`] so all generation turns automatically emit `Thought`
-    /// events and accumulate `TokenUsage` on this stage scope.
+    /// Records `usage` from a completed discriminative [`DecisionResponse`].
+    pub fn record_decision(&self, response: &DecisionResponse) {
+        if !self.enabled {
+            return;
+        }
+        self.record_usage(response.usage);
+    }
+
+    /// Wraps a [`StructuredModelProvider`] so all generation and decision turns automatically emit
+    /// `Thought` events and accumulate `TokenUsage` on this stage scope.
     pub fn instrument_provider<'p>(
         &'p self,
         inner: &'p dyn StructuredModelProvider,
@@ -206,6 +215,15 @@ impl StructuredModelProvider for InstrumentedModelProvider<'_> {
     ) -> Result<GenerationResponse, ProviderError> {
         let response = self.inner.generate_structured(request)?;
         self.scope.record_generation(&response);
+        Ok(response)
+    }
+
+    fn evaluate_decisions(
+        &self,
+        request: &DecisionRequest,
+    ) -> Result<DecisionResponse, ProviderError> {
+        let response = self.inner.evaluate_decisions(request)?;
+        self.scope.record_decision(&response);
         Ok(response)
     }
 }

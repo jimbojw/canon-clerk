@@ -14,16 +14,34 @@
 
 //! Provider-agnostic hexagonal structured-generation port and adapter exports (`docs/architecture/overview.md` §3).
 
+pub mod decision;
 pub mod gemini;
 mod gemini_wire;
+mod typesafe;
 
+pub use decision::{
+    DecisionModelProvider, DecisionRequest, DecisionResponse, MultiModelProvider,
+    TypesafeDecisionProvider,
+};
+pub(crate) use decision::{
+    MAX_DECISION_BATCH_CHARS, MAX_DECISION_NOULS_PER_CALL, MAX_DECISION_STATE_CHARS,
+    partition_decision_items,
+};
 pub use gemini::{
     DEFAULT_GEMINI_BASE_URL, GeminiModelProvider, build_generate_content_url,
     classify_gemini_http_error, extract_gemini_error_detail, strip_provider_prefix,
 };
+pub use typesafe::DEFAULT_TYPESAFE_BASE_URL;
+pub(crate) use typesafe::{
+    TypesafeNoulQuestion, TypesafeSystemOneRequest, TypesafeSystemOneResponse,
+    classify_typesafe_http_error, extract_typesafe_error_detail, post_typesafe_json,
+    strip_typesafe_prefix,
+};
 
-use crate::caseload::{DEFAULT_AUDITOR_MODEL, DEFAULT_SCREENER_MODEL};
-use crate::configure::ENV_GEMINI_API_KEY;
+use crate::caseload::{DEFAULT_AUDITOR_MODEL, DEFAULT_SCREENER_MODEL, TYPESAFE_PROVIDER};
+use crate::configure::{
+    DEFAULT_JEV_MODEL, ENV_GEMINI_API_KEY, ENV_TYPESAFE_API_KEY, model_provider,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -88,11 +106,13 @@ pub struct GenerationResponse {
     pub thoughts: Vec<String>,
 }
 
-/// Actionable errors emitted by [`StructuredModelProvider`] implementations.
+/// Actionable errors emitted by [`StructuredModelProvider`] and [`DecisionModelProvider`] implementations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderError {
-    /// Required provider API key is missing or blank.
+    /// Required Google Gemini API key is missing or blank.
     MissingApiKey,
+    /// Required TypeSafe AI API key is missing or blank.
+    MissingTypesafeApiKey,
     /// Model specifier targets a provider prefix not supported by the adapter.
     UnsupportedProvider {
         provider: String,
@@ -149,14 +169,21 @@ impl fmt::Display for ProviderError {
                  `providers.google.apiKey` in `~/.config/canon-clerk/config.json` (mode `0600`), \
                  or pass `--gemini-api-key <KEY>`."
             ),
+            Self::MissingTypesafeApiKey => write!(
+                f,
+                "Missing required TypeSafe AI API key (`{ENV_TYPESAFE_API_KEY}`) for decision evaluation.\n  \
+                 Hint: Export `{ENV_TYPESAFE_API_KEY}=\"<your-api-key>\"`, configure \
+                 `providers.typesafe.apiKey` in `~/.config/canon-clerk/config.json` (mode `0600`), \
+                 or pass `--typesafe-api-key <KEY>`."
+            ),
             Self::UnsupportedProvider {
                 provider,
                 model_specifier,
             } => write!(
                 f,
                 "Unsupported model provider `{provider}` in specifier `{model_specifier}`.\n  \
-                 Hint: Canon Clerk currently supports only the `google` provider \
-                 (e.g. `{DEFAULT_SCREENER_MODEL}` or `{DEFAULT_AUDITOR_MODEL}`)."
+                 Hint: Canon Clerk supports `google` (`{DEFAULT_SCREENER_MODEL}`, `{DEFAULT_AUDITOR_MODEL}`) \
+                 and `typesafe` (`{DEFAULT_JEV_MODEL}`)."
             ),
             Self::InvalidModelSpecifier {
                 model_specifier,
@@ -164,7 +191,8 @@ impl fmt::Display for ProviderError {
             } => write!(
                 f,
                 "Invalid model specifier `{model_specifier}`: {reason}\n  \
-                 Hint: Specify a canonical Google Gemini model such as `{DEFAULT_SCREENER_MODEL}` or `{DEFAULT_AUDITOR_MODEL}`."
+                 Hint: Specify a canonical model such as `{DEFAULT_SCREENER_MODEL}`, \
+                 `{DEFAULT_AUDITOR_MODEL}`, or `{DEFAULT_JEV_MODEL}`."
             ),
             Self::InvalidTimeout { timeout_ms } => write!(
                 f,
@@ -182,11 +210,18 @@ impl fmt::Display for ProviderError {
             Self::Transport {
                 model_specifier,
                 message,
-            } => write!(
-                f,
-                "Network connection failed for `{model_specifier}`: {message}\n  \
-                 Hint: Verify internet connectivity and DNS/TLS access to `generativelanguage.googleapis.com`."
-            ),
+            } => {
+                let host = if model_provider(model_specifier) == TYPESAFE_PROVIDER {
+                    "api.typesafe.ai"
+                } else {
+                    "generativelanguage.googleapis.com"
+                };
+                write!(
+                    f,
+                    "Network connection failed for `{model_specifier}`: {message}\n  \
+                     Hint: Verify internet connectivity and DNS/TLS access to `{host}`."
+                )
+            }
             Self::HttpStatus { diagnostic, .. } => f.write_str(diagnostic),
             Self::BlockedResponse {
                 model_specifier,
@@ -218,7 +253,8 @@ impl fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
-/// Hexagonal outbound port for deterministic, schema-constrained structured LLM generation.
+/// Hexagonal outbound port for deterministic, schema-constrained structured LLM generation
+/// (with optional discriminative `Noul` batch support for decision-model tiers).
 pub trait StructuredModelProvider: Send + Sync {
     /// Executes a single structured generation turn and returns the decoded JSON object payload
     /// alongside token accounting and extracted reasoning thoughts.
@@ -226,6 +262,19 @@ pub trait StructuredModelProvider: Send + Sync {
         &self,
         request: &GenerationRequest,
     ) -> Result<GenerationResponse, ProviderError>;
+
+    /// Evaluates batched binary `Noul` questions against a shared `state` when backed by a
+    /// discriminative decision model (such as `typesafe:jev-*`).
+    fn evaluate_decisions(
+        &self,
+        request: &DecisionRequest,
+    ) -> Result<DecisionResponse, ProviderError> {
+        let provider = crate::configure::model_provider(&request.model_specifier).to_string();
+        Err(ProviderError::UnsupportedProvider {
+            provider,
+            model_specifier: request.model_specifier.clone(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -295,6 +344,7 @@ mod tests {
         fn test_all_provider_error_variants_include_actionable_remediation_hints() {
             let errors = [
                 ProviderError::MissingApiKey,
+                ProviderError::MissingTypesafeApiKey,
                 ProviderError::UnsupportedProvider {
                     provider: "openai".to_string(),
                     model_specifier: "openai:gpt-4o".to_string(),
@@ -311,6 +361,10 @@ mod tests {
                 ProviderError::Transport {
                     model_specifier: DEFAULT_SCREENER_MODEL.to_string(),
                     message: "connection refused".to_string(),
+                },
+                ProviderError::Transport {
+                    model_specifier: DEFAULT_JEV_MODEL.to_string(),
+                    message: "dns lookup failed".to_string(),
                 },
                 ProviderError::HttpStatus {
                     status_code: 429,

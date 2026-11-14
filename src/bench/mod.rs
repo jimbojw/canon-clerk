@@ -446,6 +446,7 @@ fn execute_single_trial(
         BenchmarkStage::Audit => {
             let opts = AuditOptions {
                 threshold: spec.threshold,
+                fastpass_threshold: None,
                 timeout_ms: spec.timeout_ms,
                 max_concurrent_calls: spec.max_concurrent_calls,
             };

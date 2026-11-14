@@ -45,6 +45,7 @@ pub(crate) fn has_provider_overrides(provider: &ProviderConfigArgs) -> bool {
         || provider.auditor_model.is_some()
         || provider.reasoning_budget.is_some()
         || provider.gemini_api_key.is_some()
+        || provider.typesafe_api_key.is_some()
 }
 
 /// Merges supplementary CLI metadata (`intent`, `pr_title`, `pr_body`) onto an existing [`CaseloadIntake`].

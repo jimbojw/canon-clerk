@@ -27,13 +27,12 @@ use super::{
 use crate::audit::DEFAULT_AUDIT_TIMEOUT_MS;
 use crate::caseload::Caseload;
 use crate::cli::{
-    CanonSelectionArgs, CliError, FilingSourceArgs, ProviderConfigArgs, ensure_single_stdin_source,
-    read_caseload_operand, resolve_branch_b_options, resolve_gemini_api_key, write_caseload_file,
+    CanonSelectionArgs, CliError, FilingSourceArgs, ProviderConfigArgs, build_live_model_provider,
+    ensure_single_stdin_source, read_caseload_operand, resolve_branch_b_options,
+    write_caseload_file,
 };
 use crate::discover::WorkspaceSnapshot;
-use crate::provider::{
-    DEFAULT_GENERATION_TIMEOUT_MS, GeminiModelProvider, StructuredModelProvider,
-};
+use crate::provider::{DEFAULT_GENERATION_TIMEOUT_MS, MultiModelProvider, StructuredModelProvider};
 use crate::telemetry::{SystemTelemetryClock, TelemetryClock};
 use clap::{Parser, ValueEnum};
 use io::{
@@ -281,12 +280,12 @@ pub fn run_consistency_bench_cli(
         .discovery
         .as_ref()
         .is_some_and(|d| !d.candidate_canons.is_empty());
-    let api_key = if has_candidates {
-        resolve_gemini_api_key(&configure_opts)?
+    let live_provider = if has_candidates {
+        let cfg = caseload.config.clone().unwrap_or_default();
+        build_live_model_provider(&configure_opts, &cfg)?
     } else {
-        String::new()
+        MultiModelProvider::new(None, None)
     };
-    let live_provider = GeminiModelProvider::new(api_key);
     let clock = SystemTelemetryClock::new();
 
     run_prepared_bench_and_emit(

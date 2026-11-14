@@ -23,12 +23,16 @@ pub use store::{
 
 use crate::caseload::{
     Caseload, CaseloadConfig, DEFAULT_AUDITOR_MODEL, DEFAULT_PROVIDER, DEFAULT_SCREENER_MODEL,
+    TYPESAFE_PROVIDER,
 };
 use std::collections::BTreeMap;
 use std::fmt;
 
 /// Environment variable name for the Google Gemini API key.
 pub const ENV_GEMINI_API_KEY: &str = "GEMINI_API_KEY";
+
+/// Environment variable name for the TypeSafe AI (Jev) API key.
+pub const ENV_TYPESAFE_API_KEY: &str = "TYPESAFE_API_KEY";
 
 /// Environment variable name for overriding the screener model specifier.
 pub const ENV_SCREENER_MODEL: &str = "CANON_CLERK_SCREENER_MODEL";
@@ -42,6 +46,11 @@ pub const ENV_REASONING_BUDGET: &str = "CANON_CLERK_REASONING_BUDGET";
 /// Canonical Google Gemini Flash model specifier expanded from the `flash` shorthand alias.
 pub const DEFAULT_FLASH_MODEL: &str = "google:gemini-flash-latest";
 
+/// Canonical TypeSafe AI Jev model specifier expanded from the `jev` shorthand alias.
+pub const DEFAULT_JEV_MODEL: &str = "typesafe:jev-latest";
+
+const JEV_MODEL_ALIAS: &str = "jev";
+
 /// Domain input parameters, environment snapshot, and optional user config store for `configure`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigureOptions {
@@ -53,6 +62,8 @@ pub struct ConfigureOptions {
     pub reasoning_budget: Option<u32>,
     /// Explicit Google Gemini API key override (`--gemini-api-key`).
     pub gemini_api_key: Option<String>,
+    /// Explicit TypeSafe AI API key override (`--typesafe-api-key`).
+    pub typesafe_api_key: Option<String>,
     /// Snapshot of runtime environment variables injected by the driving adapter.
     pub env: BTreeMap<String, String>,
     /// Optional parsed user-level configuration (`~/.config/canon-clerk/config.json`).
@@ -66,6 +77,7 @@ impl ConfigureOptions {
             || self.auditor_model.is_some()
             || self.reasoning_budget.is_some()
             || self.gemini_api_key.is_some()
+            || self.typesafe_api_key.is_some()
     }
 }
 
@@ -74,9 +86,11 @@ impl ConfigureOptions {
 pub enum ConfigureError {
     /// Required `GEMINI_API_KEY` credential is missing from flags, environment, and user config.
     MissingApiKey,
-    /// Model specifier uses an unsupported provider prefix (only `google` is supported).
+    /// Required `TYPESAFE_API_KEY` credential is missing from flags, environment, and user config.
+    MissingTypesafeApiKey,
+    /// Model specifier uses an unsupported provider prefix (only `google` and `typesafe` are supported).
     UnsupportedProvider { provider: String, specifier: String },
-    /// Model specifier is empty, contains whitespace, or does not name a valid Gemini model.
+    /// Model specifier is empty, contains whitespace, or does not name a valid supported model.
     InvalidModelSpecifier { specifier: String, reason: String },
     /// Reasoning budget environment variable cannot be parsed as a non-negative integer.
     InvalidReasoningBudget { raw: String },
@@ -98,20 +112,27 @@ impl fmt::Display for ConfigureError {
                  `providers.google.apiKey` in `~/.config/canon-clerk/config.json` (mode `0600`), \
                  or pass `--gemini-api-key <KEY>`."
             ),
+            Self::MissingTypesafeApiKey => write!(
+                f,
+                "Missing required TypeSafe AI API key (`{ENV_TYPESAFE_API_KEY}`).\n  \
+                 Hint: Export `{ENV_TYPESAFE_API_KEY}=\"<your-api-key>\"`, configure \
+                 `providers.typesafe.apiKey` in `~/.config/canon-clerk/config.json` (mode `0600`), \
+                 or pass `--typesafe-api-key <KEY>`."
+            ),
             Self::UnsupportedProvider {
                 provider,
                 specifier,
             } => write!(
                 f,
                 "Unsupported model provider `{provider}` in specifier `{specifier}`.\n  \
-                 Hint: Canon Clerk currently supports only the `google` provider \
-                 (e.g. `{DEFAULT_SCREENER_MODEL}` or `{DEFAULT_AUDITOR_MODEL}`)."
+                 Hint: Canon Clerk supports `google` (e.g. `{DEFAULT_SCREENER_MODEL}`, `{DEFAULT_AUDITOR_MODEL}`) \
+                 and `typesafe` (e.g. `{DEFAULT_JEV_MODEL}`)."
             ),
             Self::InvalidModelSpecifier { specifier, reason } => write!(
                 f,
                 "Invalid model specifier `{specifier}`: {reason}\n  \
-                 Hint: Specify a canonical Google Gemini model (e.g. `{DEFAULT_SCREENER_MODEL}`, \
-                 `{DEFAULT_AUDITOR_MODEL}`, or shorthand aliases `flash-lite`, `flash`, `pro`)."
+                 Hint: Specify a canonical model such as `{DEFAULT_SCREENER_MODEL}`, \
+                 `{DEFAULT_AUDITOR_MODEL}`, `{DEFAULT_JEV_MODEL}`, or shorthand aliases `flash-lite`, `flash`, `pro`, `jev`."
             ),
             Self::InvalidReasoningBudget { raw } => write!(
                 f,
@@ -128,7 +149,7 @@ impl fmt::Display for ConfigureError {
                 f,
                 "Configuration file `{path}` resides inside the repository workspace.\n  \
                  Hint: Store credentials exclusively outside the repository in \
-                 `~/.config/canon-clerk/config.json` (mode `0600`) or via `{ENV_GEMINI_API_KEY}`."
+                 `~/.config/canon-clerk/config.json` (mode `0600`) or via `{ENV_GEMINI_API_KEY}` / `{ENV_TYPESAFE_API_KEY}`."
             ),
             Self::MalformedConfigFile { path, message } => write!(
                 f,
@@ -141,12 +162,20 @@ impl fmt::Display for ConfigureError {
 
 impl std::error::Error for ConfigureError {}
 
-/// Normalizes a raw model alias or specifier into a canonical `google:<model>` identifier.
+/// Extracts the canonical provider slug (`"google"`, `"typesafe"`, etc.) from a model specifier.
+pub(crate) fn model_provider(specifier: &str) -> &str {
+    match specifier.trim().split_once(':') {
+        Some((prov, _)) if !prov.is_empty() => prov,
+        _ => DEFAULT_PROVIDER,
+    }
+}
+
+/// Normalizes a raw model alias or specifier into a canonical `<provider>:<model>` identifier.
 ///
 /// Supported forms:
-/// - Shorthand aliases: `flash-lite`, `flash`, `pro` (with or without `google:` prefix)
-/// - Unqualified Gemini models: `gemini-*` -> `google:gemini-*`
-/// - Canonical Google specifiers: `google:gemini-*`
+/// - Shorthand aliases: `flash-lite`, `flash`, `pro` (-> `google:*`), `jev` (-> `typesafe:jev-latest`)
+/// - Unqualified models: `gemini-*` -> `google:gemini-*`, `jev-*` -> `typesafe:jev-*`
+/// - Canonical specifiers: `google:gemini-*`, `typesafe:jev-*`
 pub fn normalize_model_specifier(raw: &str) -> Result<String, ConfigureError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -163,49 +192,76 @@ pub fn normalize_model_specifier(raw: &str) -> Result<String, ConfigureError> {
         });
     }
 
-    let (provider, model_part) = match trimmed.split_once(':') {
-        Some((prov, model)) => {
-            if prov.is_empty() || model.is_empty() {
-                return Err(ConfigureError::InvalidModelSpecifier {
-                    specifier: raw.to_string(),
-                    reason: "provider and model segments around `:` must both be non-empty."
-                        .to_string(),
-                });
-            }
-            if model.contains(':') {
-                return Err(ConfigureError::InvalidModelSpecifier {
-                    specifier: raw.to_string(),
-                    reason: "model specifier must contain at most one `:` delimiter.".to_string(),
-                });
-            }
-            (prov, model)
-        }
-        None => (DEFAULT_PROVIDER, trimmed),
+    let Some((provider, model_part)) = trimmed.split_once(':') else {
+        return match trimmed {
+            "flash-lite" => Ok(DEFAULT_SCREENER_MODEL.to_string()),
+            "flash" => Ok(DEFAULT_FLASH_MODEL.to_string()),
+            "pro" => Ok(DEFAULT_AUDITOR_MODEL.to_string()),
+            JEV_MODEL_ALIAS => Ok(DEFAULT_JEV_MODEL.to_string()),
+            name if is_valid_gemini_model_name(name) => Ok(format!("{DEFAULT_PROVIDER}:{name}")),
+            name if is_valid_jev_model_name(name) => Ok(format!("{TYPESAFE_PROVIDER}:{name}")),
+            _ => Err(ConfigureError::InvalidModelSpecifier {
+                specifier: raw.to_string(),
+                reason: format!(
+                    "unrecognized model `{trimmed}` (expected `gemini-*`, `jev-*`, or alias `flash-lite`, `flash`, `pro`, `jev`)."
+                ),
+            }),
+        };
     };
 
-    if provider != DEFAULT_PROVIDER {
-        return Err(ConfigureError::UnsupportedProvider {
-            provider: provider.to_string(),
-            specifier: trimmed.to_string(),
+    if provider.is_empty() || model_part.is_empty() {
+        return Err(ConfigureError::InvalidModelSpecifier {
+            specifier: raw.to_string(),
+            reason: "provider and model segments around `:` must both be non-empty.".to_string(),
+        });
+    }
+    if model_part.contains(':') {
+        return Err(ConfigureError::InvalidModelSpecifier {
+            specifier: raw.to_string(),
+            reason: "model specifier must contain at most one `:` delimiter.".to_string(),
         });
     }
 
-    match model_part {
-        "flash-lite" => Ok(DEFAULT_SCREENER_MODEL.to_string()),
-        "flash" => Ok(DEFAULT_FLASH_MODEL.to_string()),
-        "pro" => Ok(DEFAULT_AUDITOR_MODEL.to_string()),
-        name if is_valid_gemini_model_name(name) => Ok(format!("{DEFAULT_PROVIDER}:{name}")),
-        _ => Err(ConfigureError::InvalidModelSpecifier {
-            specifier: raw.to_string(),
-            reason: format!(
-                "unrecognized Google model `{model_part}` (expected `gemini-*` or alias `flash-lite`, `flash`, `pro`)."
-            ),
+    match provider {
+        DEFAULT_PROVIDER => match model_part {
+            "flash-lite" => Ok(DEFAULT_SCREENER_MODEL.to_string()),
+            "flash" => Ok(DEFAULT_FLASH_MODEL.to_string()),
+            "pro" => Ok(DEFAULT_AUDITOR_MODEL.to_string()),
+            name if is_valid_gemini_model_name(name) => Ok(format!("{DEFAULT_PROVIDER}:{name}")),
+            _ => Err(ConfigureError::InvalidModelSpecifier {
+                specifier: raw.to_string(),
+                reason: format!(
+                    "unrecognized Google model `{model_part}` (expected `gemini-*` or alias `flash-lite`, `flash`, `pro`)."
+                ),
+            }),
+        },
+        TYPESAFE_PROVIDER => match model_part {
+            JEV_MODEL_ALIAS => Ok(DEFAULT_JEV_MODEL.to_string()),
+            name if is_valid_jev_model_name(name) => Ok(format!("{TYPESAFE_PROVIDER}:{name}")),
+            _ => Err(ConfigureError::InvalidModelSpecifier {
+                specifier: raw.to_string(),
+                reason: format!(
+                    "unrecognized TypeSafe model `{model_part}` (expected `jev-*` or alias `jev`)."
+                ),
+            }),
+        },
+        _ => Err(ConfigureError::UnsupportedProvider {
+            provider: provider.to_string(),
+            specifier: trimmed.to_string(),
         }),
     }
 }
 
 fn is_valid_gemini_model_name(name: &str) -> bool {
-    let Some(suffix) = name.strip_prefix("gemini-") else {
+    is_valid_prefixed_model_name(name, "gemini-")
+}
+
+fn is_valid_jev_model_name(name: &str) -> bool {
+    is_valid_prefixed_model_name(name, "jev-")
+}
+
+fn is_valid_prefixed_model_name(name: &str, prefix: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(prefix) else {
         return false;
     };
     !suffix.is_empty()
@@ -227,11 +283,26 @@ pub fn resolve_gemini_api_key(options: &ConfigureOptions) -> Result<String, Conf
     .ok_or(ConfigureError::MissingApiKey)
 }
 
+/// Resolves the TypeSafe AI API key from explicit overrides, `TYPESAFE_API_KEY` environment variable,
+/// or the user-level configuration store (`providers.typesafe.apiKey`).
+pub(crate) fn resolve_typesafe_api_key(
+    options: &ConfigureOptions,
+) -> Result<String, ConfigureError> {
+    let stored = options.stored_config.as_ref();
+    resolve_non_empty(
+        options.typesafe_api_key.as_deref(),
+        options.env.get(ENV_TYPESAFE_API_KEY).map(String::as_str),
+    )
+    .or_else(|| stored.and_then(StoredConfig::typesafe_api_key))
+    .map(str::to_string)
+    .ok_or(ConfigureError::MissingTypesafeApiKey)
+}
+
 /// Executes the pure, deterministic `configure` stage and populates `.config` on the [`Caseload`].
 ///
 /// Precedence hierarchy:
 /// 1. Explicit CLI flags / programmatic overrides
-/// 2. Environment variables (`CANON_CLERK_*`, `GEMINI_API_KEY`)
+/// 2. Environment variables (`CANON_CLERK_*`, `GEMINI_API_KEY`, `TYPESAFE_API_KEY`)
 /// 3. User-level configuration file (`~/.config/canon-clerk/config.json`)
 /// 4. Existing `caseload.config` or static defaults
 pub fn execute_configure(
@@ -245,10 +316,6 @@ pub fn execute_configure(
     }
 
     let stored = options.stored_config.as_ref();
-
-    let api_key = resolve_gemini_api_key(options)?;
-    let _verified_key_len = api_key.len();
-
     let existing_config = caseload.config.as_ref();
     let stored_screener = stored.and_then(StoredConfig::screener_specifier);
     let stored_auditor = stored.and_then(StoredConfig::auditor_specifier);
@@ -280,6 +347,18 @@ pub fn execute_configure(
     .or_else(|| existing_config.map(|c| c.auditor_model.as_str()))
     .unwrap_or(DEFAULT_AUDITOR_MODEL);
     let auditor_model = normalize_model_specifier(raw_auditor)?;
+
+    let uses_google = model_provider(&screener_model) == DEFAULT_PROVIDER
+        || model_provider(&auditor_model) == DEFAULT_PROVIDER;
+    let uses_typesafe = model_provider(&screener_model) == TYPESAFE_PROVIDER
+        || model_provider(&auditor_model) == TYPESAFE_PROVIDER;
+
+    if uses_google {
+        let _verified = resolve_gemini_api_key(options)?.len();
+    }
+    if uses_typesafe {
+        let _verified = resolve_typesafe_api_key(options)?.len();
+    }
 
     let reasoning_budget = resolve_reasoning_budget(options, stored, existing_config)?;
 
@@ -388,6 +467,33 @@ mod tests {
         }
 
         #[test]
+        fn test_typesafe_jev_aliases_and_specifiers_normalize() {
+            assert_eq!(
+                normalize_model_specifier("jev").expect("jev shorthand alias"),
+                DEFAULT_JEV_MODEL
+            );
+            assert_eq!(
+                normalize_model_specifier("typesafe:jev").expect("prefixed jev alias"),
+                DEFAULT_JEV_MODEL
+            );
+            assert_eq!(
+                normalize_model_specifier("jev-latest").expect("unqualified jev-latest"),
+                "typesafe:jev-latest"
+            );
+            assert_eq!(
+                normalize_model_specifier("jev-1.14.0").expect("unqualified versioned jev"),
+                "typesafe:jev-1.14.0"
+            );
+            assert_eq!(
+                normalize_model_specifier("  typesafe:jev-preview  ")
+                    .expect("trimmed canonical typesafe"),
+                "typesafe:jev-preview"
+            );
+            assert_eq!(model_provider("typesafe:jev-latest"), "typesafe");
+            assert_eq!(model_provider("google:gemini-2.5-pro"), "google");
+        }
+
+        #[test]
         fn test_unsupported_providers_rejected_with_remediation_hint() {
             let err = normalize_model_specifier("openai:gpt-4o").expect_err("openai must fail");
             assert_eq!(
@@ -407,11 +513,16 @@ mod tests {
                 "   ",
                 ":gemini-pro-latest",
                 "google:",
+                "typesafe:",
                 "google:gemini:pro",
                 "google:gemini pro",
                 "google:claude-3-5-sonnet",
+                "google:jev-latest",
+                "typesafe:gemini-2.5-pro",
+                "typesafe:jev-",
                 "unknown-model",
                 "gemini-",
+                "jev-",
             ] {
                 let err = normalize_model_specifier(invalid)
                     .expect_err(&format!("`{invalid}` must be rejected"));
@@ -510,6 +621,7 @@ mod tests {
                 auditor_model: Some("pro".to_string()),
                 reasoning_budget: Some(4096),
                 gemini_api_key: None,
+                typesafe_api_key: None,
                 env,
                 stored_config: None,
             };
@@ -565,15 +677,78 @@ mod tests {
         #[test]
         fn test_api_key_never_persisted_in_serialized_caseload() {
             let secret = "synthetic-secret-value-do-not-persist-12345";
+            let typesafe_secret = "synthetic-typesafe-secret-never-persist-67890";
             let opts = ConfigureOptions {
+                screener_model: Some("jev".to_string()),
                 gemini_api_key: Some(secret.to_string()),
+                typesafe_api_key: Some(typesafe_secret.to_string()),
                 ..ConfigureOptions::default()
             };
-            let caseload = execute_configure(&opts, None).expect("configure with flag key");
+            let caseload = execute_configure(&opts, None).expect("configure with flag keys");
             let serialized = serde_json::to_string(&caseload).expect("serialize caseload");
             assert!(
-                !serialized.contains(secret),
+                !serialized.contains(secret) && !serialized.contains(typesafe_secret),
                 "Caseload JSON must never contain raw API key material"
+            );
+        }
+
+        #[test]
+        fn test_active_provider_credential_gating_for_hybrid_and_typesafe_only_configs() {
+            // 1. Hybrid screener=jev + auditor=pro requires BOTH Gemini and TypeSafe keys
+            let missing_typesafe = ConfigureOptions {
+                screener_model: Some("jev".to_string()),
+                env: env_with_key(),
+                ..ConfigureOptions::default()
+            };
+            let err_ts = execute_configure(&missing_typesafe, None)
+                .expect_err("hybrid config without TYPESAFE_API_KEY must fail");
+            assert_eq!(err_ts, ConfigureError::MissingTypesafeApiKey);
+            assert!(err_ts.to_string().contains(ENV_TYPESAFE_API_KEY));
+            assert!(err_ts.to_string().contains("Hint:"));
+
+            // 2. Hybrid succeeds when TYPESAFE_API_KEY is supplied via env
+            let mut both_env = env_with_key();
+            both_env.insert(
+                ENV_TYPESAFE_API_KEY.to_string(),
+                "synthetic-typesafe-env-key".to_string(),
+            );
+            let hybrid_ok = execute_configure(
+                &ConfigureOptions {
+                    screener_model: Some("jev".to_string()),
+                    env: both_env,
+                    ..ConfigureOptions::default()
+                },
+                None,
+            )
+            .expect("hybrid configure should succeed");
+            assert_eq!(
+                hybrid_ok.config,
+                Some(CaseloadConfig {
+                    screener_model: DEFAULT_JEV_MODEL.to_string(),
+                    auditor_model: DEFAULT_AUDITOR_MODEL.to_string(),
+                    reasoning_budget: None,
+                })
+            );
+
+            // 3. Pure TypeSafe config does NOT require GEMINI_API_KEY
+            let mut ts_only_env = BTreeMap::new();
+            ts_only_env.insert(
+                ENV_TYPESAFE_API_KEY.to_string(),
+                "synthetic-typesafe-only-key".to_string(),
+            );
+            let ts_only_ok = execute_configure(
+                &ConfigureOptions {
+                    screener_model: Some("jev".to_string()),
+                    auditor_model: Some("typesafe:jev-latest".to_string()),
+                    env: ts_only_env,
+                    ..ConfigureOptions::default()
+                },
+                None,
+            )
+            .expect("typesafe-only config should succeed without GEMINI_API_KEY");
+            assert_eq!(
+                ts_only_ok.config.expect("config").screener_model,
+                DEFAULT_JEV_MODEL
             );
         }
     }

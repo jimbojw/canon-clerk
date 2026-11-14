@@ -16,8 +16,8 @@
 
 use super::AuditArgs;
 use crate::audit::{
-    DEFAULT_AUDIT_MAX_CONCURRENT_CALLS, DEFAULT_AUDIT_THRESHOLD, ENV_AUDIT_CONCURRENCY,
-    ENV_AUDIT_THRESHOLD,
+    DEFAULT_AUDIT_FASTPASS_THRESHOLD, DEFAULT_AUDIT_MAX_CONCURRENT_CALLS, DEFAULT_AUDIT_THRESHOLD,
+    ENV_AUDIT_CONCURRENCY, ENV_AUDIT_FASTPASS_THRESHOLD, ENV_AUDIT_THRESHOLD,
 };
 use crate::caseload::{Caseload, normalize_compliance_score};
 use crate::cli::CliError;
@@ -93,6 +93,43 @@ pub(crate) fn resolve_audit_threshold(
     Ok(DEFAULT_AUDIT_THRESHOLD)
 }
 
+pub(crate) fn resolve_audit_fastpass_threshold(
+    flag_threshold: Option<f64>,
+    env: &BTreeMap<String, String>,
+) -> Result<Option<f64>, CliError> {
+    if let Some(val) = flag_threshold {
+        let normalized = normalize_compliance_score(val).map_err(|detail| {
+            CliError::usage(format!(
+                "Invalid `--audit-fastpass-threshold` value `{val}`: {detail}.\n  \
+                 Hint: Pass a finite float in `[0.0, 1.0]` via `--audit-fastpass-threshold <FLOAT>` (default: `{DEFAULT_AUDIT_FASTPASS_THRESHOLD}`)."
+            ))
+        })?;
+        return Ok(Some(normalized));
+    }
+
+    if let Some(raw_env) = env
+        .get(ENV_AUDIT_FASTPASS_THRESHOLD)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        let parsed = raw_env.parse::<f64>().map_err(|_| {
+            CliError::usage(format!(
+                "Invalid threshold `{raw_env}` in `{ENV_AUDIT_FASTPASS_THRESHOLD}`: expected a float in `[0.0, 1.0]`.\n  \
+                 Hint: Pass `--audit-fastpass-threshold <FLOAT>` or set `{ENV_AUDIT_FASTPASS_THRESHOLD}={DEFAULT_AUDIT_FASTPASS_THRESHOLD}`."
+            ))
+        })?;
+        let normalized = normalize_compliance_score(parsed).map_err(|detail| {
+            CliError::usage(format!(
+                "Invalid threshold `{raw_env}` in `{ENV_AUDIT_FASTPASS_THRESHOLD}`: {detail}.\n  \
+                 Hint: Set `{ENV_AUDIT_FASTPASS_THRESHOLD}` to a finite value in `[0.0, 1.0]` (default: `{DEFAULT_AUDIT_FASTPASS_THRESHOLD}`)."
+            ))
+        })?;
+        return Ok(Some(normalized));
+    }
+
+    Ok(None)
+}
+
 pub(crate) fn resolve_audit_concurrency(
     flag_concurrency: Option<usize>,
     env: &BTreeMap<String, String>,
@@ -152,6 +189,7 @@ pub(super) fn can_fast_forward_completed_audit(
         && !intake_opts.has_designated_source()
         && args.canons.is_empty()
         && args.audit_threshold.is_none()
+        && args.audit_fastpass_threshold.is_none()
         && args.audit_concurrency.is_none()
         && !has_admit_cli_overrides(args)
         && !has_docket_cli_overrides(args)

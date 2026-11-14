@@ -14,6 +14,7 @@
 
 //! Host user-level configuration file (`~/.config/canon-clerk/config.json`) loader and security validators.
 
+use crate::caseload::{DEFAULT_PROVIDER, TYPESAFE_PROVIDER};
 use crate::configure::ConfigureError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -119,8 +120,17 @@ impl StoredConfig {
     /// Returns the non-empty Google API key stored under `providers.google.apiKey` (or `providers.gemini.apiKey`).
     pub fn google_api_key(&self) -> Option<&str> {
         self.providers
-            .get("google")
+            .get(DEFAULT_PROVIDER)
             .or_else(|| self.providers.get("gemini"))
+            .and_then(|p| p.api_key.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Returns the non-empty TypeSafe AI API key stored under `providers.typesafe.apiKey`.
+    pub fn typesafe_api_key(&self) -> Option<&str> {
+        self.providers
+            .get(TYPESAFE_PROVIDER)
             .and_then(|p| p.api_key.as_deref())
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -311,6 +321,9 @@ mod tests {
                 "providers": {
                     "google": {
                         "apiKey": "synthetic-stored-key-from-config-json"
+                    },
+                    "typesafe": {
+                        "apiKey": "synthetic-stored-typesafe-key"
                     }
                 },
                 "screenerModel": "flash-lite",
@@ -332,6 +345,10 @@ mod tests {
             assert_eq!(
                 loaded.google_api_key(),
                 Some("synthetic-stored-key-from-config-json")
+            );
+            assert_eq!(
+                loaded.typesafe_api_key(),
+                Some("synthetic-stored-typesafe-key")
             );
             assert_eq!(loaded.screener_specifier().as_deref(), Some("flash-lite"));
             assert_eq!(

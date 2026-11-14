@@ -14,13 +14,16 @@
 
 //! Core domain execution engine for the `apprise` Caseload DAG stage (`docs/architecture/nodes/apprise.md`).
 
+mod decision;
 mod prompt;
 
 use crate::caseload::{
-    ApprisalStatus, CanonApprisalAssessment, Caseload, CaseloadApprisal, normalize_unit_score,
+    ApprisalStatus, CanonApprisalAssessment, Caseload, CaseloadApprisal, TYPESAFE_PROVIDER,
+    normalize_unit_score,
 };
+use crate::configure::model_provider;
 use crate::discover::WorkspaceSnapshot;
-use crate::docket::partition_candidate_canons;
+use crate::docket::{partition_candidate_canons, resolve_canon_path};
 use crate::provider::{
     DEFAULT_GENERATION_TIMEOUT_MS, GenerationRequest, ProviderError, StructuredModelProvider,
 };
@@ -220,6 +223,11 @@ pub fn execute_apprise(
         .config
         .as_ref()
         .ok_or(AppriseError::MissingConfig)?;
+    if model_provider(&config.screener_model) == TYPESAFE_PROVIDER {
+        return decision::execute_apprise_decisions(
+            options, caseload, threshold, workspace, provider,
+        );
+    }
 
     let intent_prefix = build_apprise_intent_prefix(intake, discovery);
     let response_schema = build_apprise_schema();
@@ -392,32 +400,6 @@ fn decode_apprise_assessments(
     }
 
     Ok(out)
-}
-
-fn resolve_canon_path<'a>(
-    raw_path: &'a str,
-    expected: &BTreeSet<&'a str>,
-    pos: Option<&'a str>,
-) -> Option<&'a str> {
-    if let Some(&exact) = expected.get(raw_path) {
-        return Some(exact);
-    }
-    let pos = pos?;
-    if raw_path.rsplit('/').next() == pos.rsplit('/').next() {
-        return Some(pos);
-    }
-    let pref = raw_path
-        .bytes()
-        .zip(pos.bytes())
-        .take_while(|(a, b)| a == b)
-        .count();
-    let suff = raw_path
-        .bytes()
-        .rev()
-        .zip(pos.bytes().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-    ((pref + suff) * 5 >= raw_path.len().max(pos.len()).max(1) * 4).then_some(pos)
 }
 
 fn decode_single_assessment(

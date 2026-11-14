@@ -14,13 +14,15 @@
 
 //! Core domain execution engine for the `admit` Caseload DAG stage (`docs/architecture/nodes/admit.md`).
 
+mod decision;
 mod decode;
 mod exhibits;
 mod prompt;
 
 use crate::caseload::{
-    Caseload, CaseloadEvidence, ExhibitAssessment, normalize_admissibility_score,
+    Caseload, CaseloadEvidence, ExhibitAssessment, TYPESAFE_PROVIDER, normalize_admissibility_score,
 };
+use crate::configure::model_provider;
 use crate::discover::WorkspaceSnapshot;
 use crate::docket::ENV_MAX_CONCURRENT_CALLS;
 use crate::provider::{
@@ -220,6 +222,17 @@ pub fn execute_admit(
     }
 
     let config = caseload.config.as_ref().ok_or(AdmitError::MissingConfig)?;
+    if model_provider(&config.screener_model) == TYPESAFE_PROVIDER {
+        return decision::execute_admit_decisions(
+            options,
+            caseload,
+            threshold,
+            empty_cases,
+            non_empty_cases,
+            workspace,
+            provider,
+        );
+    }
     let response_schema = build_admit_schema();
 
     let mut prepared_calls = Vec::with_capacity(non_empty_cases.len());

@@ -151,7 +151,7 @@ impl CanonSelectionArgs {
 /// Composable CLI argument group for model configuration, reasoning budgets, and provider credentials (Branch B).
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProviderConfigArgs {
-    /// Custom screener model specifier or shorthand alias (`flash-lite`, `flash`, `pro`; env: `CANON_CLERK_SCREENER_MODEL`).
+    /// Custom screener model specifier or shorthand alias (`flash-lite`, `flash`, `pro`, `jev`; env: `CANON_CLERK_SCREENER_MODEL`).
     #[arg(
         long = "screener-model",
         value_name = "MODEL",
@@ -186,6 +186,15 @@ pub struct ProviderConfigArgs {
         help = "Google Gemini API key (fallback env: GEMINI_API_KEY)"
     )]
     pub gemini_api_key: Option<String>,
+
+    /// TypeSafe AI API key override for Jev models (fallback env: `TYPESAFE_API_KEY`; never persisted to Caseload JSON).
+    #[arg(
+        long = "typesafe-api-key",
+        value_name = "KEY",
+        help_heading = "Provider Credentials",
+        help = "TypeSafe AI API key for Jev models (fallback env: TYPESAFE_API_KEY)"
+    )]
+    pub typesafe_api_key: Option<String>,
 }
 
 /// Composable CLI argument group for Caseload envelope I/O across all stage subcommands.

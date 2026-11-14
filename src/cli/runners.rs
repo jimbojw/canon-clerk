@@ -14,14 +14,16 @@
 
 //! Shared upstream stage runners for Branch A (Filing) and Branch B (Environment) pipelines.
 
-use crate::caseload::Caseload;
+use crate::caseload::{Caseload, CaseloadConfig, DEFAULT_PROVIDER, TYPESAFE_PROVIDER};
 use crate::cli::CliError;
 use crate::cli::args::{CanonSelectionArgs, FilingSourceArgs, ProviderConfigArgs};
 use crate::configure::{
-    ConfigureOptions, execute_configure, load_host_config_file, resolve_default_config_path,
+    ConfigureOptions, execute_configure, load_host_config_file, model_provider,
+    resolve_default_config_path,
 };
 use crate::discover::{DiscoverError, DiscoverOptions, execute_discover_on_disk};
 use crate::intake::{IntakeError, IntakeOptions, execute_intake};
+use crate::provider::MultiModelProvider;
 use crate::telemetry::{PipelineStage, TelemetrySession};
 use crate::validate::{ValidateError, ValidateOptions, execute_validate_on_disk};
 use std::collections::BTreeMap;
@@ -180,6 +182,7 @@ pub fn resolve_branch_b_options(
         auditor_model: provider.auditor_model.clone(),
         reasoning_budget: provider.reasoning_budget,
         gemini_api_key: provider.gemini_api_key.clone(),
+        typesafe_api_key: provider.typesafe_api_key.clone(),
         env: env.clone(),
         stored_config,
     })
@@ -207,6 +210,36 @@ pub fn run_branch_b_configure(
 pub fn resolve_gemini_api_key(options: &ConfigureOptions) -> Result<String, CliError> {
     crate::configure::resolve_gemini_api_key(options)
         .map_err(|err| CliError::usage(err.to_string()))
+}
+
+/// Extracts and validates the active TypeSafe AI API key from resolved [`ConfigureOptions`].
+pub(crate) fn resolve_typesafe_api_key(options: &ConfigureOptions) -> Result<String, CliError> {
+    crate::configure::resolve_typesafe_api_key(options)
+        .map_err(|err| CliError::usage(err.to_string()))
+}
+
+/// Builds a live [`MultiModelProvider`] resolving only the credentials required by `config`.
+pub(crate) fn build_live_model_provider(
+    options: &ConfigureOptions,
+    config: &CaseloadConfig,
+) -> Result<MultiModelProvider, CliError> {
+    let needs_google = model_provider(&config.screener_model) == DEFAULT_PROVIDER
+        || model_provider(&config.auditor_model) == DEFAULT_PROVIDER;
+    let needs_typesafe = model_provider(&config.screener_model) == TYPESAFE_PROVIDER
+        || model_provider(&config.auditor_model) == TYPESAFE_PROVIDER;
+
+    let gemini_key = if needs_google {
+        Some(resolve_gemini_api_key(options)?)
+    } else {
+        resolve_gemini_api_key(options).ok()
+    };
+    let typesafe_key = if needs_typesafe {
+        Some(resolve_typesafe_api_key(options)?)
+    } else {
+        resolve_typesafe_api_key(options).ok()
+    };
+
+    Ok(MultiModelProvider::new(gemini_key, typesafe_key))
 }
 
 #[cfg(test)]
@@ -271,6 +304,7 @@ mod tests {
                 auditor_model: None,
                 reasoning_budget: None,
                 gemini_api_key: None,
+                typesafe_api_key: None,
                 env: BTreeMap::new(),
                 stored_config: None,
             };

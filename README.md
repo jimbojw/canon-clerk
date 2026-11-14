@@ -84,6 +84,9 @@ The `canon-clerk` CLI evaluates diffs, target paths, and pull request metadata a
 # Audit an in-flight diff against governing canons (requires GEMINI_API_KEY when candidates match):
 git diff origin/main | canon-clerk audit --diff -
 
+# Accelerate screening and clean happy-path audits with TypeSafe Jev + Gemini Pro escalation:
+git diff origin/main | canon-clerk audit --diff - --screener-model jev
+
 # Audit explicit target paths or run in GitHub Actions annotation mode with Caseload archival:
 canon-clerk audit src/cli
 git diff origin/main | canon-clerk audit --diff - --format github --output-caseload caseload.json
@@ -95,7 +98,7 @@ canon-clerk validate --all-canons
 canon-clerk apprise --intent "Add a new CLI subcommand flag" src/cli
 ```
 
-Stage-specific flags (`--audit-threshold`, `--audit-concurrency`, `--admit-threshold`, `--admit-concurrency`, `--docket-threshold`, `--auditor-model`, `--screener-model`, `--reasoning-budget`, `--caseload`, `--json`) and execution mechanics are documented in the [Caseload Pipeline Architecture](docs/architecture/overview.md) and [`audit` Stage Specification](docs/architecture/nodes/audit.md).
+Stage-specific flags (`--audit-threshold`, `--audit-fastpass-threshold`, `--audit-concurrency`, `--admit-threshold`, `--admit-concurrency`, `--docket-threshold`, `--auditor-model`, `--screener-model`, `--reasoning-budget`, `--gemini-api-key`, `--typesafe-api-key`, `--caseload`, `--json`) and execution mechanics are documented in the [Caseload Pipeline Architecture](docs/architecture/overview.md) and [`audit` Stage Specification](docs/architecture/nodes/audit.md).
 
 ---
 

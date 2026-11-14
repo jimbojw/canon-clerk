@@ -19,6 +19,9 @@ use serde::{Deserialize, Serialize};
 /// Canonical default provider namespace for MVP model specifiers (`docs/architecture/nodes/configure.md` §3).
 pub const DEFAULT_PROVIDER: &str = "google";
 
+/// Canonical provider namespace for TypeSafe AI decision models (`typesafe:jev-*`).
+pub const TYPESAFE_PROVIDER: &str = "typesafe";
+
 /// Default canonical screener model specifier (`docs/architecture/nodes/configure.md` §3).
 pub const DEFAULT_SCREENER_MODEL: &str = "google:gemini-flash-lite-latest";
 

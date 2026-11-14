@@ -14,11 +14,11 @@
 
 //! CLI driving adapter for the `canon-clerk configure` subcommand.
 
-use crate::caseload::{Caseload, CaseloadConfig};
+use crate::caseload::{Caseload, CaseloadConfig, DEFAULT_PROVIDER, TYPESAFE_PROVIDER};
 use crate::cli::CliError;
 use crate::cli::args::{CaseloadIoArgs, ProviderConfigArgs};
 use crate::cli::runners::{resolve_branch_b_options, run_branch_b_configure};
-use crate::configure::ENV_GEMINI_API_KEY;
+use crate::configure::{ENV_GEMINI_API_KEY, ENV_TYPESAFE_API_KEY, model_provider};
 use crate::telemetry::TelemetrySession;
 use clap::{Args, ValueEnum};
 use std::collections::BTreeMap;
@@ -32,6 +32,9 @@ Examples:
 
   # Configure custom screener and auditor models via aliases:
   canon-clerk configure --screener-model flash-lite --auditor-model pro
+
+  # Configure TypeSafe Jev as fast screener alongside Gemini Pro auditor:
+  canon-clerk configure --screener-model jev --auditor-model pro
 
   # Configure custom models via fully-qualified specifiers:
   canon-clerk configure --screener-model google:gemini-2.5-flash-lite --auditor-model google:gemini-2.5-pro
@@ -61,7 +64,7 @@ pub enum ConfigureFormat {
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 #[command(
     about = "Resolve and normalize provider credentials, model specifiers, and reasoning budgets",
-    long_about = "Operational Environment Normalizer of the Caseload DAG (Branch B). Verifies runtime provider credentials (GEMINI_API_KEY), normalizes screener and auditor model specifiers into canonical provider:model identifiers, and populates `.config` on the cumulative Caseload without persisting secret material.",
+    long_about = "Operational Environment Normalizer of the Caseload DAG (Branch B). Verifies active runtime provider credentials (GEMINI_API_KEY, TYPESAFE_API_KEY), normalizes screener and auditor model specifiers into canonical provider:model identifiers, and populates `.config` on the cumulative Caseload without persisting secret material.",
     after_help = CONFIGURE_EXAMPLES
 )]
 pub struct ConfigureArgs {
@@ -156,13 +159,32 @@ fn render_configure_output(
     Ok(())
 }
 
+fn verified_credentials_label(config: &CaseloadConfig) -> String {
+    let mut keys = Vec::new();
+    if model_provider(&config.screener_model) == DEFAULT_PROVIDER
+        || model_provider(&config.auditor_model) == DEFAULT_PROVIDER
+    {
+        keys.push(ENV_GEMINI_API_KEY);
+    }
+    if model_provider(&config.screener_model) == TYPESAFE_PROVIDER
+        || model_provider(&config.auditor_model) == TYPESAFE_PROVIDER
+    {
+        keys.push(ENV_TYPESAFE_API_KEY);
+    }
+    format!("{} (verified)", keys.join(", "))
+}
+
 fn render_compact_output(config: &CaseloadConfig, stdout: &mut dyn Write) -> std::io::Result<()> {
     writeln!(stdout, "screener_model\t{}", config.screener_model)?;
     writeln!(stdout, "auditor_model\t{}", config.auditor_model)?;
     if let Some(budget) = config.reasoning_budget {
         writeln!(stdout, "reasoning_budget\t{budget}")?;
     }
-    writeln!(stdout, "credentials\t{ENV_GEMINI_API_KEY} (verified)")?;
+    writeln!(
+        stdout,
+        "credentials\t{}",
+        verified_credentials_label(config)
+    )?;
     Ok(())
 }
 
@@ -176,7 +198,8 @@ fn render_stylish_output(config: &CaseloadConfig, stdout: &mut dyn Write) -> std
     }
     writeln!(
         stdout,
-        "  Credentials      : {ENV_GEMINI_API_KEY} (verified)"
+        "  Credentials      : {}",
+        verified_credentials_label(config)
     )?;
     Ok(())
 }
@@ -240,6 +263,7 @@ mod tests {
                     auditor_model: Some("pro".to_string()),
                     reasoning_budget: Some(2048),
                     gemini_api_key: Some(secret.to_string()),
+                    typesafe_api_key: None,
                 },
                 io: CaseloadIoArgs {
                     json: true,
@@ -303,6 +327,32 @@ mod tests {
             assert!(compact_str.contains("auditor_model\tgoogle:gemini-pro-latest"));
             assert!(compact_str.contains("reasoning_budget\t1024"));
             assert!(!compact_str.contains(secret));
+        }
+
+        #[test]
+        fn test_hybrid_typesafe_jev_screener_verifies_both_keys_without_leakage() {
+            let ts_secret = "synthetic-typesafe-cli-secret-never-echo";
+            let args = ConfigureArgs {
+                provider: ProviderConfigArgs {
+                    screener_model: Some("jev".to_string()),
+                    typesafe_api_key: Some(ts_secret.to_string()),
+                    ..ProviderConfigArgs::default()
+                },
+                format: ConfigureFormat::Stylish,
+                ..ConfigureArgs::default()
+            };
+            let mut stdin = Cursor::new(b"");
+            let mut out = Vec::new();
+            let caseload = run_configure_with_env(&args, &mut stdin, &mut out, &test_env())
+                .expect("hybrid configure should succeed");
+            let rendered = String::from_utf8(out).expect("utf8");
+            assert!(rendered.contains("typesafe:jev-latest"));
+            assert!(rendered.contains("GEMINI_API_KEY, TYPESAFE_API_KEY (verified)"));
+            assert!(!rendered.contains(ts_secret));
+            assert_eq!(
+                caseload.config.expect("config").screener_model,
+                "typesafe:jev-latest"
+            );
         }
     }
 

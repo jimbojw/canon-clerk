@@ -14,12 +14,14 @@
 
 //! Core domain execution engine for the `docket` Caseload DAG stage (`docs/architecture/nodes/docket.md`).
 
+mod decision;
 mod prompt;
 
 use crate::caseload::{
-    CanonDocketAssessment, Caseload, CaseloadDocket, ColorabilityStatus,
+    CanonDocketAssessment, Caseload, CaseloadDocket, ColorabilityStatus, TYPESAFE_PROVIDER,
     normalize_colorability_score,
 };
+use crate::configure::model_provider;
 use crate::discover::WorkspaceSnapshot;
 use crate::provider::{
     DEFAULT_GENERATION_TIMEOUT_MS, GenerationRequest, ProviderError, StructuredModelProvider,
@@ -238,6 +240,11 @@ pub fn execute_docket(
     }
 
     let config = caseload.config.as_ref().ok_or(DocketError::MissingConfig)?;
+    if model_provider(&config.screener_model) == TYPESAFE_PROVIDER {
+        return decision::execute_docket_decisions(
+            options, caseload, threshold, workspace, provider,
+        );
+    }
 
     let filing_prefix = build_docket_filing_prefix(intake, discovery);
     let response_schema = build_docket_schema();
@@ -408,7 +415,7 @@ fn decode_docket_cases(
     Ok(out)
 }
 
-fn resolve_canon_path<'a>(
+pub(crate) fn resolve_canon_path<'a>(
     raw_path: &'a str,
     expected: &BTreeSet<&'a str>,
     pos: Option<&'a str>,

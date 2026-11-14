@@ -14,16 +14,23 @@
 
 //! Core domain execution engine for the `audit` Caseload DAG stage (`docs/architecture/nodes/audit.md`).
 
+mod decision;
 mod decode;
 mod exhibits;
 mod prompt;
 
+pub use decision::{DEFAULT_AUDIT_FASTPASS_THRESHOLD, ENV_AUDIT_FASTPASS_THRESHOLD};
 pub use exhibits::resolve_canon_reference_paths;
 
-use crate::caseload::{CanonAdjudication, Caseload, CaseloadVerdict, normalize_compliance_score};
+use crate::caseload::{
+    CanonAdjudication, Caseload, CaseloadVerdict, TYPESAFE_PROVIDER, normalize_compliance_score,
+};
+use crate::configure::model_provider;
 use crate::discover::WorkspaceSnapshot;
 use crate::docket::ENV_MAX_CONCURRENT_CALLS;
-use crate::provider::{GenerationRequest, ProviderError, StructuredModelProvider};
+use crate::provider::{
+    DEFAULT_GENERATION_TIMEOUT_MS, GenerationRequest, ProviderError, StructuredModelProvider,
+};
 use decode::decode_case_adjudication;
 use prompt::{AUDIT_SYSTEM_INSTRUCTION, build_audit_case_user_prompt, build_audit_schema};
 use std::collections::BTreeSet;
@@ -46,11 +53,16 @@ pub const ENV_AUDIT_THRESHOLD: &str = "CANON_CLERK_AUDIT_THRESHOLD";
 /// Environment variable name for overriding `--audit-concurrency` (`docs/architecture/nodes/audit.md` §5).
 pub const ENV_AUDIT_CONCURRENCY: &str = "CANON_CLERK_AUDIT_CONCURRENCY";
 
+pub(super) const DEFAULT_GENERATION_TIMEOUT_FOR_FASTPASS_MS: u64 = DEFAULT_GENERATION_TIMEOUT_MS;
+
 /// Domain input parameters for executing the `audit` pipeline stage.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuditOptions {
     /// Substantive compliance score threshold in `[0.0, 1.0]` (defaults to [`DEFAULT_AUDIT_THRESHOLD`]).
     pub threshold: f64,
+    /// Optional confidence threshold in `[0.0, 1.0]` required for discriminative happy-path fast-pass
+    /// when `screener_model` uses a decision model (`None` defaults to `threshold.max(0.80)`).
+    pub fastpass_threshold: Option<f64>,
     /// Per-request timeout ceiling in milliseconds (defaults to [`DEFAULT_AUDIT_TIMEOUT_MS`]).
     pub timeout_ms: u64,
     /// Optional maximum concurrent in-flight per-case trial calls (`>= 1`; defaults to [`DEFAULT_AUDIT_MAX_CONCURRENT_CALLS`]).
@@ -61,6 +73,7 @@ impl Default for AuditOptions {
     fn default() -> Self {
         Self {
             threshold: DEFAULT_AUDIT_THRESHOLD,
+            fastpass_threshold: None,
             timeout_ms: DEFAULT_AUDIT_TIMEOUT_MS,
             max_concurrent_calls: None,
         }
@@ -149,11 +162,29 @@ impl From<ProviderError> for AuditError {
     }
 }
 
-struct PreparedTrialCall {
-    canon_ref: String,
-    canon_id: String,
-    admitted_file_paths: BTreeSet<String>,
-    request: GenerationRequest,
+pub(super) struct PreparedTrialCall {
+    pub(super) canon_ref: String,
+    pub(super) canon_id: String,
+    pub(super) admitted_file_paths: BTreeSet<String>,
+    pub(super) request: GenerationRequest,
+}
+
+fn validate_audit_options(options: &AuditOptions) -> Result<(f64, f64), AuditError> {
+    let threshold = normalize_compliance_score(options.threshold)
+        .map_err(|detail| AuditError::InvalidThreshold { detail })?;
+    let fastpass_threshold = match options.fastpass_threshold {
+        Some(raw_fp) => normalize_compliance_score(raw_fp)
+            .map_err(|detail| AuditError::InvalidThreshold { detail })?,
+        None => threshold.max(DEFAULT_AUDIT_FASTPASS_THRESHOLD),
+    };
+    if options.max_concurrent_calls == Some(0) {
+        return Err(AuditError::InvalidConcurrency {
+            detail: format!(
+                "max_concurrent_calls must be at least 1, got 0 (see `{ENV_AUDIT_CONCURRENCY}` / `{ENV_MAX_CONCURRENT_CALLS}`)"
+            ),
+        });
+    }
+    Ok((threshold, fastpass_threshold))
 }
 
 /// Executes the pure `audit` domain stage against an in-memory [`WorkspaceSnapshot`] and
@@ -164,15 +195,7 @@ pub fn execute_audit(
     workspace: &WorkspaceSnapshot,
     provider: &dyn StructuredModelProvider,
 ) -> Result<Caseload, AuditError> {
-    let threshold = normalize_compliance_score(options.threshold)
-        .map_err(|detail| AuditError::InvalidThreshold { detail })?;
-    if options.max_concurrent_calls == Some(0) {
-        return Err(AuditError::InvalidConcurrency {
-            detail: format!(
-                "max_concurrent_calls must be at least 1, got 0 (see `{ENV_AUDIT_CONCURRENCY}` / `{ENV_MAX_CONCURRENT_CALLS}`)"
-            ),
-        });
-    }
+    let (threshold, fastpass_threshold) = validate_audit_options(options)?;
 
     if caseload.verdict.is_some() {
         return Ok(caseload);
@@ -251,13 +274,30 @@ pub fn execute_audit(
     let concurrency_limit = options
         .max_concurrent_calls
         .unwrap_or(DEFAULT_AUDIT_MAX_CONCURRENT_CALLS);
-    let adjudications = execute_trial_calls(
-        &prepared_calls,
-        concurrency_limit,
-        threshold,
-        &config.auditor_model,
-        provider,
-    )?;
+    let uses_decision_tier = model_provider(&config.screener_model) == TYPESAFE_PROVIDER
+        || model_provider(&config.auditor_model) == TYPESAFE_PROVIDER;
+    let adjudications = if uses_decision_tier {
+        decision::execute_decision_assisted_trials(
+            &prepared_calls,
+            &decision::DecisionTrialParams {
+                screener_model: &config.screener_model,
+                auditor_model: &config.auditor_model,
+                threshold,
+                fastpass_threshold,
+                concurrency_limit,
+                trial_timeout_ms: options.timeout_ms,
+            },
+            provider,
+        )?
+    } else {
+        execute_trial_calls(
+            &prepared_calls,
+            concurrency_limit,
+            threshold,
+            &config.auditor_model,
+            provider,
+        )?
+    };
 
     Ok(caseload.with_verdict(CaseloadVerdict::from_adjudications(adjudications)))
 }

@@ -39,8 +39,9 @@ pub use apprise::{
     ENV_APPRISE_BATCH_SIZE, ENV_APPRISE_CONCURRENCY, ENV_APPRISE_THRESHOLD, execute_apprise,
 };
 pub use audit::{
-    AuditError, AuditOptions, DEFAULT_AUDIT_MAX_CONCURRENT_CALLS, DEFAULT_AUDIT_THRESHOLD,
-    DEFAULT_AUDIT_TIMEOUT_MS, ENV_AUDIT_CONCURRENCY, ENV_AUDIT_THRESHOLD, execute_audit,
+    AuditError, AuditOptions, DEFAULT_AUDIT_FASTPASS_THRESHOLD, DEFAULT_AUDIT_MAX_CONCURRENT_CALLS,
+    DEFAULT_AUDIT_THRESHOLD, DEFAULT_AUDIT_TIMEOUT_MS, ENV_AUDIT_CONCURRENCY,
+    ENV_AUDIT_FASTPASS_THRESHOLD, ENV_AUDIT_THRESHOLD, execute_audit,
     resolve_canon_reference_paths,
 };
 pub use bench::{
@@ -74,7 +75,7 @@ pub use caseload::{
     CaseloadProbe, CaseloadValidation, CaseloadVerdict, CodeAnnotation, ColorabilityStatus,
     ContentOmissionReason, DEFAULT_AUDITOR_MODEL, DEFAULT_PROVIDER, DEFAULT_SCREENER_MODEL,
     DiscoveryMode, ExhibitAssessment, FileArtifact, FileChangeStatus, IntakeScope,
-    LinkedIssueContext, PatchOmissionReason, ProbeEndpointResult, ProbeStatus,
+    LinkedIssueContext, PatchOmissionReason, ProbeEndpointResult, ProbeStatus, TYPESAFE_PROVIDER,
     ValidatedCanonMetadata, ValidationOutcome, VerdictStatus, normalize_admissibility_score,
     normalize_colorability_score, normalize_compliance_score, normalize_unit_score,
     sort_annotations,
@@ -97,10 +98,10 @@ pub use cli::{
     run_validate, run_validate_in_workspace, run_validate_with_telemetry,
 };
 pub use configure::{
-    ConfigureError, ConfigureOptions, DEFAULT_FLASH_MODEL, ENV_AUDITOR_MODEL, ENV_GEMINI_API_KEY,
-    ENV_REASONING_BUDGET, ENV_SCREENER_MODEL, StoredConfig, StoredProviderConfig, StoredTierModel,
-    execute_configure, load_host_config_file, normalize_model_specifier,
-    resolve_default_config_path, resolve_gemini_api_key,
+    ConfigureError, ConfigureOptions, DEFAULT_FLASH_MODEL, DEFAULT_JEV_MODEL, ENV_AUDITOR_MODEL,
+    ENV_GEMINI_API_KEY, ENV_REASONING_BUDGET, ENV_SCREENER_MODEL, ENV_TYPESAFE_API_KEY,
+    StoredConfig, StoredProviderConfig, StoredTierModel, execute_configure, load_host_config_file,
+    normalize_model_specifier, resolve_default_config_path, resolve_gemini_api_key,
 };
 pub use discover::{
     DEFAULT_CANON_GLOB, DEFAULT_IGNORES, DiscoverError, DiscoverOptions, GlobPattern,
@@ -116,13 +117,15 @@ pub use docket::{
 pub use intake::{IntakeError, IntakeOptions, execute_intake, parse_unified_diff};
 pub use probe::{
     DEFAULT_PROBE_TIMEOUT_MS, ENV_PROBE_TIMEOUT_MS, EndpointProber, GeminiEndpointProber,
-    ProbeError, ProbeOptions, decode_gemini_probe_response, execute_probe,
+    MultiProviderEndpointProber, ProbeError, ProbeOptions, TypesafeEndpointProber,
+    decode_gemini_probe_response, execute_probe,
 };
 pub use provider::{
-    DEFAULT_GEMINI_BASE_URL, DEFAULT_GENERATION_TIMEOUT_MS, GeminiModelProvider, GenerationRequest,
-    GenerationResponse, ProviderError, StructuredModelProvider, TokenUsage,
-    build_generate_content_url, classify_gemini_http_error, extract_gemini_error_detail,
-    strip_provider_prefix,
+    DEFAULT_GEMINI_BASE_URL, DEFAULT_GENERATION_TIMEOUT_MS, DEFAULT_TYPESAFE_BASE_URL,
+    DecisionModelProvider, DecisionRequest, DecisionResponse, GeminiModelProvider,
+    GenerationRequest, GenerationResponse, MultiModelProvider, ProviderError,
+    StructuredModelProvider, TokenUsage, TypesafeDecisionProvider, build_generate_content_url,
+    classify_gemini_http_error, extract_gemini_error_detail, strip_provider_prefix,
 };
 pub use telemetry::{
     CompositeTelemetrySink, InstrumentedModelProvider, JsonlWriterSink, NoopTelemetryClock,
