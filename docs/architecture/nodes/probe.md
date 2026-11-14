@@ -57,11 +57,11 @@ flowchart LR
 
 ## 4. Process & Domain Logic (`configuration`)
 
-1. **Endpoint Resolution:** Reads configured `screener_model` and `auditor_model` from `caseload.config`.
-2. **Ping Request Assembly:** Constructs lightweight probe requests (0 reasoning tokens, minimum prompt payload) to verify authentication and reachability.
-3. **Concurrent Probe:** Concurrently sends probe requests to both endpoints in parallel:
-   - Measures roundtrip response latency in milliseconds (`latency_ms`).
-   - Verifies model availability and provider credential validity.
+1. **Endpoint Resolution:** Reads configured `screener_model` and `auditor_model` from `caseload.config` and dispatches each tier to its corresponding provider endpoint adapter (`google:*` or `typesafe:*`).
+2. **Provider-Native Ping Assembly:** Constructs minimal zero-reasoning probe requests—a single-token `:generateContent` ping for `google:*` endpoints and a minimal single-question `/v1/systemone` decision ping for `typesafe:*` endpoints—to verify authentication, model resolution, and network reachability.
+3. **Concurrent Multi-Provider Probe:** Concurrently sends probe requests to both configured tiers in parallel:
+   - Measures roundtrip response latency in milliseconds (`latency_ms`) and captures the concrete resolved model identifier returned by each provider.
+   - Verifies model availability and provider credential validity across both homogeneous and mixed-provider tier pairings.
 4. **Diagnostic Record:** Attaches endpoint latency and reachability metadata to `Caseload.probe`.
 
 ---
@@ -74,6 +74,9 @@ The CLI exposes `probe` as an imperative subcommand:
 # Human-readable connectivity and latency check:
 canon-clerk probe
 
+# Probe TypeSafe Jev screener alongside Gemini Pro auditor:
+canon-clerk probe --screener-model jev
+
 # Emit structured JSON probe record:
 canon-clerk probe --json
 ```
@@ -84,6 +87,7 @@ canon-clerk probe --json
 - `--auditor-model <model>` (fallback env: `CANON_CLERK_AUDITOR_MODEL`): Custom auditor model specifier or alias.
 - `--reasoning-budget <tokens>` (fallback env: `CANON_CLERK_REASONING_BUDGET`): Maximum reasoning budget tokens.
 - `--gemini-api-key <key>` (fallback env: `GEMINI_API_KEY`): Google Gemini API key override.
+- `--typesafe-api-key <key>` (fallback env: `TYPESAFE_API_KEY`): TypeSafe AI Jev API key override.
 - `--format <stylish|json|compact>`: Output presentation format.
 - `--caseload <path|->`: Ingests upstream Caseload.
 - `--output-caseload <path>`: Writes cumulative `Caseload` JSON to disk independently of stdout.

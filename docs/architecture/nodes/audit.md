@@ -23,7 +23,7 @@
 flowchart LR
     subgraph Inputs["Inputs"]
         Admit["admit (or --caseload)<br/><code>.evidence</code>"]
-        Params["Stage Flags<br/><i>(--audit-threshold, --audit-concurrency,<br/>--admit-threshold, --docket-threshold,<br/>--auditor-model, --reasoning-budget)</i>"]
+        Params["Stage Flags<br/><i>(--audit-threshold, --audit-fastpass-threshold,<br/>--audit-concurrency, --admit-threshold, --docket-threshold,<br/>--auditor-model, --screener-model, --reasoning-budget)</i>"]
     end
 
     Admit --> Audit["audit<br/><b>(Current Node)</b><br/><code>.verdict</code>"]
@@ -77,10 +77,11 @@ flowchart LR
    - Projects strictly its `"admitted"` exhibits from `.evidence.exhibits[canon_path]`.
    - Formats admitted file exhibits with explicit 1-based target-file line coordinates (annotated unified diff hunks from `.intake.diffs` when present, or numbered UTF-8 file snapshots from the workspace for path-only / `--all-targets` sweeps) alongside admitted filing metadata blocks (`pr_title`, `pr_body`, `linked_issues`).
    - Resolves static frontmatter `references:` patterns within the canon's `<scope>/` against materialized workspace files and injects them as authoritative statutory reference context.
-3. **Concurrent Isolated Per-Case Trials (`gemini-pro-latest`):**  
-   Evaluates each active case in an **independent, isolated prompt turn** using `caseload.config.auditor_model` at `temperature: 0.0`, forwarding `caseload.config.reasoning_budget` when configured:
-   - **Isolation:** Prevents cross-canon hallucination; Canon A's exceptions and references never bleed into Canon B's trial.
-   - **Bounded Concurrency:** Executes trials concurrently up to `--audit-concurrency` (default: `4`), aggregating prompt, completion, reasoning, and total token usage alongside intermediate reasoning `Thought` deltas into `StageFinish` telemetry. If any trial fails provider transport or schema decoding, the stage fails fast.
+3. **Concurrent Isolated Per-Case Trials & Two-Tier Happy-Path Fast-Pass:**  
+   Evaluates active cases up to `--audit-concurrency` (default: `4`), aggregating prompt, completion, reasoning, and total token usage alongside intermediate reasoning `Thought` deltas into `StageFinish` telemetry:
+   - **Standard Generative Trials (`google:*`, e.g., `gemini-pro-latest`):** Evaluates each active case in an **independent, isolated prompt turn** at `temperature: 0.0`, forwarding `caseload.config.reasoning_budget` when configured so Canon A's exceptions and references never bleed into Canon B's trial.
+   - **Two-Tier Discriminative Happy-Path Fast-Pass (`typesafe:*` Screener $\to$ `google:*` Auditor):** When `caseload.config.screener_model` targets a discriminative decision model (`typesafe:*`) and `caseload.config.auditor_model` targets a generative reasoning model (`google:*`), `audit` first evaluates each active case's admitted exhibits and statute via a single-forward-pass discriminative compliance `Noul` check (zero output tokens). Cases whose compliance probability meets `max(--audit-threshold, --audit-fastpass-threshold)` (default `0.80`) pass immediately, whereas any suspected violation or low-confidence borderline case (`score < fastpass_threshold`) automatically escalates to an isolated deep generative `auditor_model` trial to evaluate exceptions, synthesize remediation guidance, and anchor 1-based line `CodeAnnotation`s.
+   - **Pure Discriminative Trials (`typesafe:*` Auditor):** When `caseload.config.auditor_model` itself targets a discriminative model, `audit` renders deterministic statute-grounded decrees directly from compliance probabilities (anchoring failing cases at line `1` of the primary admitted file exhibit when applicable).
 4. **The Four-Step Judicial Decision Tree & Polarized Score Rubric:**
    - **Step 1 (Invariant Evaluation):** Evaluates admitted exhibits strictly against the normative invariant (What), treating `Rationale` (Why) as disambiguating intent context and `Remediation` (How) as post-violation repair guidance rather than extra syntactic mandates (`SPEC.md` §5). If compliant $\implies$ score in `[0.80, 1.0]`, `annotations: []`.
    - **Step 2 (Exception Screening):** If a prima facie violation is detected, evaluates declared `Exception` clauses against the admitted exhibits. If an exception's verifiable conditions are satisfied $\implies$ short-circuits to conditional `pass` (`compliance_score` in `[0.80, 0.95]`, `annotations: []`), citing the matched exception in `compliance_summary`.
@@ -116,6 +117,9 @@ canon-clerk audit --caseload caseload-6.json
 
 # 4. Run in GitHub Actions mode while archiving the full Caseload JSON artifact:
 git diff origin/main | canon-clerk audit --diff - --format github --output-caseload caseload.json
+
+# 5. Use TypeSafe Jev for ultra-fast screening and happy-path fast-pass with Gemini Pro escalation:
+git diff origin/main | canon-clerk audit --diff - --screener-model jev
 ```
 
 ### Missing Input Source & Case-or-Controversy Guard
@@ -132,10 +136,11 @@ Conversely, if an explicitly designated stream yields zero changes, `discover` m
 - `--diff <PATH|->`, `--all-targets`, `--intent <TEXT>`, `--pr-title <TEXT>`, `--pr-body <TEXT>`, `--pr-body-file <PATH>`: Shared filing source and metadata flags.
 - `--all-canons`, `--canon <PATH|GLOB>`: Shared canon selection scope flags (evaluated against the underlying filing).
 - `--audit-threshold <FLOAT>` (fallback env: `CANON_CLERK_AUDIT_THRESHOLD`): Substantive compliance threshold in `[0.0, 1.0]` (default: `0.5`). Ambiguous unqualified `--threshold` and out-of-closure `--apprise-*` flags (`--apprise-threshold`, `--apprise-batch-size`, `--apprise-concurrency`) are rejected with exit code `2` and guidance pointing to `--audit-threshold`, `--admit-threshold`, and `--docket-threshold`.
+- `--audit-fastpass-threshold <FLOAT>` (fallback env: `CANON_CLERK_AUDIT_FASTPASS_THRESHOLD`): High-confidence discriminative fast-pass threshold in `[0.0, 1.0]` (default: `0.80`) governing when two-tier `audit` runs (`typesafe:*` screener + `google:*` auditor) accept a compliant case without escalating to a generative `auditor_model` trial. Accepted exclusively on `audit`.
 - `--audit-concurrency <COUNT>` (fallback env: `CANON_CLERK_AUDIT_CONCURRENCY`; config file key: `auditConcurrency`): Optional positive integer (`>= 1`) bounding maximum concurrent in-flight per-case trial calls (default: `4`). Follows standard precedence (explicit CLI flag $\to$ environment variable $\to$ `~/.config/canon-clerk/config.json` $\to$ built-in default).
 - `--admit-threshold <FLOAT>` (`CANON_CLERK_ADMIT_THRESHOLD`), `--admit-concurrency <COUNT>` / `--max-concurrent-calls <COUNT>` (`CANON_CLERK_ADMIT_CONCURRENCY`): Upstream micro evidentiary admissibility options accepted transitively for telescoping runs.
 - `--docket-threshold <FLOAT>` (`CANON_CLERK_DOCKET_THRESHOLD`), `--docket-batch-size <COUNT>` / `--max-canons-per-call <COUNT>` (`CANON_CLERK_DOCKET_BATCH_SIZE`), `--docket-concurrency <COUNT>` (`CANON_CLERK_DOCKET_CONCURRENCY`): Upstream macro jurisdiction triage options accepted transitively for telescoping runs.
-- `--auditor-model <MODEL>` (`CANON_CLERK_AUDITOR_MODEL`), `--screener-model <MODEL>` (`CANON_CLERK_SCREENER_MODEL`), `--reasoning-budget <TOKENS>` (`CANON_CLERK_REASONING_BUDGET`), `--gemini-api-key <KEY>` (`GEMINI_API_KEY`): Shared model configuration and credential options (resolved JIT only when heuristic evaluation is required).
+- `--auditor-model <MODEL>` (`CANON_CLERK_AUDITOR_MODEL`), `--screener-model <MODEL>` (`CANON_CLERK_SCREENER_MODEL`), `--reasoning-budget <TOKENS>` (`CANON_CLERK_REASONING_BUDGET`), `--gemini-api-key <KEY>` (`GEMINI_API_KEY`), `--typesafe-api-key <KEY>` (`TYPESAFE_API_KEY`): Shared model configuration and credential options (resolved JIT only when heuristic evaluation is required).
 - `-v` / `--verbose` (`CANON_CLERK_VERBOSE`), `--log-file <PATH>` (`CANON_CLERK_LOG_FILE`): Global diagnostic progress and structured JSONL telemetry stream options.
 - `--format <stylish|json|compact|github>`: Output formatting choice (defaults to `github` when `GITHUB_ACTIONS=true`, otherwise `stylish`).
 - `--caseload <PATH|->`: Ingests upstream `Caseload` JSON from file or `-` for standard input.

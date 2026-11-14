@@ -40,7 +40,7 @@ The DAG consists of **Two Feeder Branches** that converge at `docket` (for dispu
 1. **Branch A: The Filing Track (`intake` $\longrightarrow$ `discover` $\longrightarrow$ `validate`):**  
    Ingests in-flight diffs, target paths, or prospective design intent, verifies state preconditions (`exists:`), matches candidate canon triggers, and validates candidate canon ASTs and schemas. Completely local, deterministic, and requires 0 tokens and zero API credentials.
 2. **Branch B: The Environment Track (`configure`):**  
-   Resolves provider credentials (`GEMINI_API_KEY`), model specifiers, and reasoning budgets. Completely offline, deterministic, and completes in <5ms with 0 tokens and zero network calls.
+   Resolves active provider credentials (`GEMINI_API_KEY`, `TYPESAFE_API_KEY`), canonical `<provider>:<model>` specifiers, and reasoning budgets. Completely offline, deterministic, and completes in <5ms with 0 tokens and zero network calls.
 3. **Diagnostic Leaf (`probe`):**  
    An auxiliary termination node depending strictly on `configure`. Executes live provider connectivity and latency tests without triggering an audit run.
 4. **The Heuristic Cascade (`docket` $\longrightarrow$ `admit` $\longrightarrow$ `audit`):**  
@@ -101,6 +101,7 @@ flowchart TD
 
     subgraph DrivenAdapters ["Driven Adapters (Outbound Ports)"]
         Provider["Structured Model Provider<br/>(Deterministic JSON Decoding, Reasoning Budgets, Token & Thought Telemetry)"]
+        DecisionProvider["Decision Model Provider<br/>(Discriminative Parallel Noul Probabilities, Zero Output Tokens)"]
     end
 
     CLI --> Core
@@ -109,7 +110,9 @@ flowchart TD
     Config --> Core
     Core --> Schema
     Core --> Provider
+    Core --> DecisionProvider
     Config -.-> Provider
+    Config -.-> DecisionProvider
 ```
 
 ### The Domain Engine (The Hexagon Core)
@@ -118,10 +121,11 @@ flowchart TD
 - **Configuration & Probe:** Resolves runtime environment and API credentials, normalizes model specifiers, and implements the diagnostic `probe` provider health check.
 
 ### The Driven Adapter (The Model Provider Boundary)
-- **Provider-Neutral Structured Generation Port:** Encapsulates vendor-specific LLM transport protocols, REST wire types, and authentication headers behind a provider-agnostic port so heuristic stages (`apprise`, `docket`, `admit`, `audit`) evaluate exclusively against normalized model specifiers, system instructions, prompts, and JSON Schemas.
-- **Deterministic Reason-First Constrained Decoding:** Enforces deterministic generation (`temperature: 0.0`) paired with strict JSON Schema output enforcement (`application/json`) so rationale scratchpad fields precede numeric scores across every heuristic call.
-- **Extended Reasoning & Out-of-Band Telemetry Capture:** Maps optional token ceilings (`reasoning_budget`) to provider-native extended thinking controls, separates intermediate reasoning thought summaries from the decoded structured JSON payload, and captures prompt, completion, reasoning, and total token accounting alongside roundtrip latency for the out-of-band Telemetry Event Stream.
-- **Credential Encapsulation & Actionable Error Classification:** Secret API keys are bound to concrete provider adapters at construction rather than carried on generation requests or `Caseload` envelopes, and upstream HTTP or transport failures (`401`/`403`, `404`, `429`, `5xx`, timeouts, safety blocks, or malformed JSON responses) are classified into actionable diagnostics with concrete remediation hints.
+- **Provider-Neutral Structured Generation Port:** Encapsulates vendor-specific generative LLM transport protocols, REST wire types, and authentication headers (`google:gemini-*`) behind a provider-agnostic port so heuristic stages (`apprise`, `docket`, `admit`, `audit`) evaluate against normalized model specifiers, system instructions, prompts, and JSON Schemas.
+- **Discriminative Decision Model Port:** Encapsulates discriminative classifier endpoints (`typesafe:jev-*`) behind a parallel binary-question (`Noul`) port that evaluates batched yes/no hypotheses against shared filing context in a single forward pass with zero autoregressive output tokens—powering ultra-low-latency screening across `apprise`, `docket`, and `admit`, plus two-tier happy-path fast-pass escalation in `audit`.
+- **Deterministic Reason-First Constrained Decoding:** Enforces deterministic generation (`temperature: 0.0`) paired with strict JSON Schema output enforcement (`application/json`) on generative tiers so rationale scratchpad fields precede numeric scores across generative calls.
+- **Extended Reasoning & Out-of-Band Telemetry Capture:** Maps optional token ceilings (`reasoning_budget`) to provider-native extended thinking controls, separates intermediate reasoning thought summaries from decoded payloads, and captures prompt, completion, reasoning, and total token accounting alongside roundtrip latency for the out-of-band Telemetry Event Stream.
+- **Credential Encapsulation & Actionable Error Classification:** Secret API keys are bound to concrete provider adapters at construction rather than carried on evaluation requests or `Caseload` envelopes, and upstream HTTP or transport failures (`401`/`403`, `404`, `429`, `5xx`, context token limits, timeouts, safety blocks, or malformed responses) are classified into actionable diagnostics with provider-specific remediation hints.
 
 ### The Driving Adapter (The CLI Boundary)
 - **CLI Binary:** The sole driving adapter translating POSIX stdin streams (`-`, `--diff -`, `--caseload -`), argv flags, and local working directories into inputs for the domain engine and configuration. Formats user-facing terminal progress, spinners, event streams, and the **Pipeline Funnel Receipt** (summarizing upstream ancestor outcomes to prevent "silent zero" ambiguity), and maps domain results to shell exit codes (`0`, `1`, `2`).
@@ -185,10 +189,10 @@ All heuristic metrics share an identical polarity convention: **a higher score r
 | `validate` | Branch A (Filing) | Deterministic | 0 tokens, ~12ms | 0 syntax errors; fails fast (code 1) on lint error |
 | `configure` | Branch B (Env) | Deterministic | 0 tokens, <5ms | Valid config; fails fast (code 2) on missing keys |
 | `probe` | Diagnostic Leaf | Network probe | 0 tokens, variable | Endpoint reachable; fails fast (code 2) on failure |
-| `apprise` | Apprisal Track | Flash-Lite AI | ~400ms, low $ | `apprisal_score >= 0.5`; exits 0 if candidates empty |
-| `docket` | Cascade Spine | Flash-Lite AI | ~400ms, low $ | `colorability_score >= 0.5`; exits 0 if docket empty |
-| `admit` | Cascade Spine | Flash-Lite AI | ~600ms, low $ | `admissibility_score >= 0.5`; exits 0 if no exhibits |
-| `audit` | Cascade Spine | Pro Reasoning | ~2.5s, targeted | `compliance_score >= 0.5` $\implies$ pass (0), else fail (1) |
+| `apprise` | Apprisal Track | Screener AI (`Flash-Lite` / `Jev`) | ~200–400ms, low \$ | `apprisal_score >= 0.5`; exits 0 if candidates empty |
+| `docket` | Cascade Spine | Screener AI (`Flash-Lite` / `Jev`) | ~200–400ms, low \$ | `colorability_score >= 0.5`; exits 0 if docket empty |
+| `admit` | Cascade Spine | Screener AI (`Flash-Lite` / `Jev`) | ~300–600ms, low \$ | `admissibility_score >= 0.5`; exits 0 if no exhibits |
+| `audit` | Cascade Spine | Auditor AI (`Pro` / 2-Tier Fast-Pass) | ~0.3–2.5s, targeted | `compliance_score >= 0.5` $\implies$ pass (0), else fail (1) |
 
 ---
 

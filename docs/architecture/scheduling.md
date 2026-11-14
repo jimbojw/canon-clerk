@@ -78,7 +78,7 @@ flowchart TD
     
     S3 --> SyntaxCheck{"AST / Schema Valid?"}
     SyntaxCheck -- "Malformed" --> Fail1["Exit 1 (Fail Fast · 0 Tokens)"]
-    SyntaxCheck -- "Valid" --> S4["configure (JIT Evaluation)<br/>(Resolve GEMINI_API_KEY & models)"]
+    SyntaxCheck -- "Valid" --> S4["configure (JIT Evaluation)<br/>(Resolve active provider keys & models)"]
     
     S4 --> ConfigCheck{"Credentials Present?"}
     ConfigCheck -- "Missing" --> Fail2["Exit 2 (Fail Fast · Configuration Error)"]
@@ -128,11 +128,13 @@ canon-clerk audit --caseload caseload-6.json
 To prevent cross-stage parameter leakage in telescoping cascades, all stage-specific tuning parameters use **explicit stage-prefixed flags**:
 - `--docket-threshold <float>` (sets `docket`'s colorability threshold, default: `0.5`)
 - `--admit-threshold <float>` (sets `admit`'s admissibility threshold, default: `0.5`)
+- `--audit-threshold <float>` (sets `audit`'s compliance threshold, default: `0.5`)
+- `--audit-fastpass-threshold <float>` (sets `audit`'s two-tier discriminative fast-pass threshold, default: `0.80`)
 - `--apprise-threshold <float>` (sets `apprise`'s apprisal threshold, default: `0.5`)
 
 #### Scoping & Validation Invariants:
 1. **Transitive Acceptance:** A subcommand accepts a stage-prefixed flag if and only if that stage exists within its transitive dependency closure.
-   - `canon-clerk audit` accepts `--docket-threshold` and `--admit-threshold` because `docket` and `admit` precede `audit`.
+   - `canon-clerk audit` accepts `--audit-threshold`, `--audit-fastpass-threshold`, `--admit-threshold`, and `--docket-threshold` because `docket` and `admit` precede `audit`.
    - `canon-clerk admit` accepts `--docket-threshold` and `--admit-threshold`.
    - `canon-clerk docket` accepts `--docket-threshold`.
    - `canon-clerk apprise` accepts `--apprise-threshold`.

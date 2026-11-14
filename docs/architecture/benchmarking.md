@@ -44,8 +44,8 @@ flowchart LR
         Stages["Heuristic Stage Engines<br/>(apprise · docket · admit · audit)"]
     end
 
-    subgraph DrivenPort ["Driven Adapter"]
-        Provider["Structured Model Provider"]
+    subgraph DrivenPort ["Driven Adapters"]
+        Provider["Structured & Decision Model Providers<br/>(google:* · typesafe:*)"]
     end
 
     Runner --> Upstream
