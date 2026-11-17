@@ -161,7 +161,11 @@ fn render_configure_output(
 
 fn verified_credentials_label(config: &CaseloadConfig) -> String {
     let keys = verified_credential_env_vars(config);
-    format!("{} (verified)", keys.join(", "))
+    if keys.is_empty() {
+        "none required (local)".to_string()
+    } else {
+        format!("{} (verified)", keys.join(", "))
+    }
 }
 
 fn render_compact_output(config: &CaseloadConfig, stdout: &mut dyn Write) -> std::io::Result<()> {
@@ -273,6 +277,7 @@ mod tests {
                     reasoning_budget: Some(2048),
                     gemini_api_key: Some(secret.to_string()),
                     typesafe_api_key: None,
+                    local_decision_endpoint: None,
                 },
                 io: CaseloadIoArgs {
                     json: true,

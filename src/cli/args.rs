@@ -209,6 +209,15 @@ pub struct ProviderConfigArgs {
         help = "TypeSafe AI API key for Jev models (fallback env: TYPESAFE_API_KEY)"
     )]
     pub typesafe_api_key: Option<String>,
+
+    /// Localhost decision daemon endpoint override for `local:<model>` (default: `http://127.0.0.1:8080`; fallback env: `CANON_CLERK_LOCAL_DECISION_ENDPOINT`).
+    #[arg(
+        long = "local-decision-endpoint",
+        value_name = "URL",
+        help_heading = "Provider Credentials",
+        help = "Localhost decision daemon URL for local:<model> (default: http://127.0.0.1:8080; fallback env: CANON_CLERK_LOCAL_DECISION_ENDPOINT)"
+    )]
+    pub local_decision_endpoint: Option<String>,
 }
 
 impl ProviderConfigArgs {

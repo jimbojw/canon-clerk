@@ -17,11 +17,12 @@
 
 use crate::caseload::{
     CaseloadConfig, DEFAULT_AUDITOR_MODEL, DEFAULT_PROVIDER, DEFAULT_SCREENER_MODEL,
-    TYPESAFE_PROVIDER,
+    LOCAL_PROVIDER, TYPESAFE_PROVIDER,
 };
 use crate::configure::{
-    ConfigureError, ConfigureOptions, DEFAULT_JEV_MODEL, ENV_GEMINI_API_KEY, ENV_TYPESAFE_API_KEY,
-    is_discriminative_model, model_provider, resolve_non_empty,
+    ConfigureError, ConfigureOptions, DEFAULT_JEV_MODEL, DEFAULT_LOCAL_DECISION_ENDPOINT,
+    ENV_CANON_CLERK_LOCAL_DECISION_ENDPOINT, ENV_GEMINI_API_KEY, ENV_LOCAL_DECISION_ENDPOINT,
+    ENV_TYPESAFE_API_KEY, StoredConfig, is_discriminative_model, model_provider, resolve_non_empty,
 };
 use std::collections::BTreeSet;
 use std::fmt;
@@ -145,6 +146,33 @@ pub(crate) fn resolve_provider_api_key(
     Err(missing_explicit_provider_key_error(slug))
 }
 
+/// Resolves the localhost decision endpoint following standard precedence (`CLI flag -> env -> config.json -> default`).
+pub fn resolve_local_decision_endpoint(options: &ConfigureOptions) -> String {
+    resolve_non_empty(
+        options.local_decision_endpoint.as_deref(),
+        options
+            .env
+            .get(ENV_CANON_CLERK_LOCAL_DECISION_ENDPOINT)
+            .map(String::as_str),
+    )
+    .or_else(|| {
+        options
+            .env
+            .get(ENV_LOCAL_DECISION_ENDPOINT)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    })
+    .or_else(|| {
+        options
+            .stored_config
+            .as_ref()
+            .and_then(StoredConfig::local_decision_endpoint)
+    })
+    .unwrap_or(DEFAULT_LOCAL_DECISION_ENDPOINT)
+    .to_string()
+}
+
 fn missing_explicit_provider_key_error(slug: &str) -> ConfigureError {
     match slug {
         DEFAULT_PROVIDER => ConfigureError::MissingApiKey,
@@ -245,7 +273,9 @@ pub(crate) fn verify_closure_credentials(
     options: &ConfigureOptions,
 ) -> Result<(), ConfigureError> {
     let screener_prov = model_provider(state.screener_model);
-    if let Err(screener_err) = resolve_provider_api_key(screener_prov, options) {
+    if screener_prov != LOCAL_PROVIDER
+        && let Err(screener_err) = resolve_provider_api_key(screener_prov, options)
+    {
         if state.screener_was_pinned {
             return Err(screener_err);
         }
@@ -448,6 +478,7 @@ mod tests {
                 TYPESAFE_PROVIDER.to_string(),
                 StoredProviderConfig {
                     api_key: Some("stored-ts-key".to_string()),
+                    ..StoredProviderConfig::default()
                 },
             );
             let opts = ConfigureOptions {
@@ -563,6 +594,123 @@ mod tests {
                     DEFAULT_SCREENER_MODEL.to_string(),
                     DEFAULT_AUDITOR_MODEL.to_string()
                 )
+            );
+        }
+
+        #[test]
+        fn test_local_provider_credential_free_and_hybrid_closures() {
+            use crate::configure::execute_configure;
+
+            let offline_opts = ConfigureOptions {
+                screener_model: Some("local:qwen2.5-coder-1.5b-instruct".to_string()),
+                screener_only_closure: true,
+                ..ConfigureOptions::default()
+            };
+            let offline_cfg = execute_configure(&offline_opts, None)
+                .expect("local screener-only closure must succeed offline without API keys")
+                .config
+                .expect("config");
+            assert_eq!(
+                offline_cfg.screener_model,
+                "local:qwen2.5-coder-1.5b-instruct"
+            );
+
+            let full_no_key = ConfigureOptions {
+                screener_model: Some("local:qwen2.5-coder-1.5b-instruct".to_string()),
+                screener_only_closure: false,
+                ..ConfigureOptions::default()
+            };
+            assert!(matches!(
+                execute_configure(&full_no_key, None),
+                Err(ConfigureError::MissingCredentials(
+                    MissingCredentialsReason::GenerativeAuditorRequired { .. }
+                ))
+            ));
+
+            let mut gemini_env = BTreeMap::new();
+            gemini_env.insert(ENV_GEMINI_API_KEY.to_string(), "gemini-key".to_string());
+            let hybrid_cfg = execute_configure(
+                &ConfigureOptions {
+                    env: gemini_env,
+                    ..full_no_key
+                },
+                None,
+            )
+            .expect("hybrid local screener + gemini auditor must succeed")
+            .config
+            .expect("config");
+            assert_eq!(
+                verified_credential_env_vars(&hybrid_cfg),
+                vec![ENV_GEMINI_API_KEY]
+            );
+
+            let bad_auditor = ConfigureOptions {
+                auditor_model: Some("local:qwen2.5-coder-1.5b-instruct".to_string()),
+                screener_only_closure: true,
+                ..ConfigureOptions::default()
+            };
+            assert!(matches!(
+                execute_configure(&bad_auditor, None),
+                Err(ConfigureError::DiscriminativeAuditorUnsupported { .. })
+            ));
+        }
+
+        #[test]
+        fn test_local_provider_endpoint_precedence() {
+            assert_eq!(
+                resolve_local_decision_endpoint(&ConfigureOptions::default()),
+                DEFAULT_LOCAL_DECISION_ENDPOINT
+            );
+            let stored = StoredConfig {
+                providers: BTreeMap::from([(
+                    LOCAL_PROVIDER.to_string(),
+                    StoredProviderConfig {
+                        api_key: None,
+                        endpoint: Some("http://127.0.0.1:8081".to_string()),
+                    },
+                )]),
+                ..StoredConfig::default()
+            };
+            assert_eq!(
+                resolve_local_decision_endpoint(&ConfigureOptions {
+                    stored_config: Some(stored.clone()),
+                    ..ConfigureOptions::default()
+                }),
+                "http://127.0.0.1:8081"
+            );
+            let mut env = BTreeMap::new();
+            env.insert(
+                ENV_LOCAL_DECISION_ENDPOINT.to_string(),
+                "http://127.0.0.1:8082".to_string(),
+            );
+            assert_eq!(
+                resolve_local_decision_endpoint(&ConfigureOptions {
+                    env: env.clone(),
+                    stored_config: Some(stored.clone()),
+                    ..ConfigureOptions::default()
+                }),
+                "http://127.0.0.1:8082"
+            );
+            env.insert(
+                ENV_CANON_CLERK_LOCAL_DECISION_ENDPOINT.to_string(),
+                "http://127.0.0.1:8083".to_string(),
+            );
+            assert_eq!(
+                resolve_local_decision_endpoint(&ConfigureOptions {
+                    env: env.clone(),
+                    stored_config: Some(stored.clone()),
+                    ..ConfigureOptions::default()
+                }),
+                "http://127.0.0.1:8083"
+            );
+            assert_eq!(
+                resolve_local_decision_endpoint(&ConfigureOptions {
+                    local_decision_endpoint: Some("http://127.0.0.1:8084".to_string()),
+                    env,
+                    stored_config: Some(stored),
+                    ..ConfigureOptions::default()
+                }),
+                "http://127.0.0.1:8084"
             );
         }
     }

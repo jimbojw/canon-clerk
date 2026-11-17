@@ -80,10 +80,11 @@ pub use caseload::{
     DEFAULT_AUDITOR_MODEL, DEFAULT_AUDITOR_THINKING_LEVEL, DEFAULT_GENERATIVE_SCREENER_MODEL,
     DEFAULT_PROBE_THINKING_LEVEL, DEFAULT_PROVIDER, DEFAULT_SCREENER_MODEL,
     DEFAULT_SCREENER_REASONING_BUDGET, DiscoveryMode, ExhibitAssessment, FileArtifact,
-    FileChangeStatus, IntakeScope, LinkedIssueContext, PatchOmissionReason, ProbeEndpointResult,
-    ProbeStatus, TYPESAFE_PROVIDER, ThinkingLevel, ValidatedCanonMetadata, ValidationOutcome,
-    VerdictStatus, VettingStatus, normalize_admissibility_score, normalize_colorability_score,
-    normalize_compliance_score, normalize_unit_score, normalize_vetting_score, sort_annotations,
+    FileChangeStatus, IntakeScope, LOCAL_PROVIDER, LinkedIssueContext, PatchOmissionReason,
+    ProbeEndpointResult, ProbeStatus, TYPESAFE_PROVIDER, ThinkingLevel, ValidatedCanonMetadata,
+    ValidationOutcome, VerdictStatus, VettingStatus, normalize_admissibility_score,
+    normalize_colorability_score, normalize_compliance_score, normalize_unit_score,
+    normalize_vetting_score, sort_annotations,
 };
 pub use cli::{
     AdmitArgs, AdmitFormat, AppriseArgs, AppriseFormat, AuditArgs, AuditFormat, CanonSelectionArgs,
@@ -105,12 +106,14 @@ pub use cli::{
     run_vet_live_with_telemetry, run_vet_with_snapshot_and_provider, run_vet_with_telemetry,
 };
 pub use configure::{
-    ConfigureError, ConfigureOptions, DEFAULT_JEV_MODEL, ENV_AUDITOR_MODEL, ENV_GEMINI_API_KEY,
-    ENV_REASONING_BUDGET, ENV_SCREENER_MODEL, ENV_THINKING_LEVEL, ENV_TYPESAFE_API_KEY,
-    MissingCredentialsReason, PROVIDER_CAPABILITIES, ProviderCapability, ProviderRole,
-    StoredConfig, StoredProviderConfig, StoredTierModel, execute_configure,
+    ConfigureError, ConfigureOptions, DEFAULT_JEV_MODEL, DEFAULT_LOCAL_DECISION_ENDPOINT,
+    ENV_AUDITOR_MODEL, ENV_CANON_CLERK_LOCAL_DECISION_ENDPOINT, ENV_GEMINI_API_KEY,
+    ENV_LOCAL_DECISION_ENDPOINT, ENV_REASONING_BUDGET, ENV_SCREENER_MODEL, ENV_THINKING_LEVEL,
+    ENV_TYPESAFE_API_KEY, MissingCredentialsReason, PROVIDER_CAPABILITIES, ProviderCapability,
+    ProviderRole, StoredConfig, StoredProviderConfig, StoredTierModel, execute_configure,
     is_discriminative_model, load_host_config_file, normalize_model_specifier,
     parse_thinking_level, resolve_default_config_path, resolve_gemini_api_key,
+    resolve_local_decision_endpoint,
 };
 pub use discover::{
     DEFAULT_CANON_GLOB, DEFAULT_IGNORES, DiscoverError, DiscoverOptions, GlobPattern,
@@ -127,19 +130,21 @@ pub use docket::{
 pub use intake::{IntakeError, IntakeOptions, execute_intake, parse_unified_diff};
 pub use probe::{
     DEFAULT_PROBE_TIMEOUT_MS, ENV_PROBE_TIMEOUT_MS, EndpointProber, GeminiDecisionsEndpointProber,
-    GeminiEndpointProber, MultiProviderEndpointProber, ProbeError, ProbeOptions,
-    TypesafeEndpointProber, decode_gemini_decisions_probe_response, decode_gemini_probe_response,
-    execute_probe,
+    GeminiEndpointProber, LocalEndpointProber, MultiProviderEndpointProber, ProbeError,
+    ProbeOptions, TypesafeEndpointProber, decode_gemini_decisions_probe_response,
+    decode_gemini_probe_response, decode_local_decision_probe_response, execute_probe,
 };
 pub use provider::{
     DEFAULT_BASE_BACKOFF_MS, DEFAULT_COOLDOWN_SLOT_MS, DEFAULT_GEMINI_BASE_URL,
     DEFAULT_GENERATION_TIMEOUT_MS, DEFAULT_MAX_BACKOFF_MS, DEFAULT_MAX_RETRIES,
     DEFAULT_TYPESAFE_BASE_URL, DecisionBudgetProfile, DecisionModelProvider, DecisionRequest,
     DecisionResponse, ENV_MAX_BACKOFF_MS, ENV_MAX_RETRIES, GeminiDecisionProvider,
-    GeminiModelProvider, GenerationRequest, GenerationResponse, MultiModelProvider, ProviderError,
-    RetryNotification, RetryObserver, RetryPolicy, SharedHttpRequester, StructuredModelProvider,
-    TokenUsage, TypesafeDecisionProvider, build_decisions_url, build_generate_content_url,
-    classify_gemini_decisions_http_error, classify_gemini_http_error, extract_gemini_error_detail,
+    GeminiModelProvider, GenerationRequest, GenerationResponse, LOCAL_DISCRIMINATOR_SYSTEM_PROMPT,
+    LocalDecisionProvider, MultiModelProvider, ProviderError, RetryNotification, RetryObserver,
+    RetryPolicy, SharedHttpRequester, StructuredModelProvider, TokenUsage,
+    TypesafeDecisionProvider, build_decisions_url, build_generate_content_url,
+    build_local_chat_completions_url, classify_gemini_decisions_http_error,
+    classify_gemini_http_error, classify_local_http_error, extract_gemini_error_detail,
     strip_provider_prefix,
 };
 pub use telemetry::{

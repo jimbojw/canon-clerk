@@ -19,7 +19,7 @@ use crate::cli::CliError;
 use crate::cli::args::{CanonSelectionArgs, FilingSourceArgs, ProviderConfigArgs};
 use crate::configure::{
     ConfigureOptions, execute_configure, load_host_config_file, model_provider,
-    resolve_default_config_path,
+    resolve_default_config_path, resolve_local_decision_endpoint,
 };
 use crate::discover::{DiscoverError, DiscoverOptions, execute_discover_on_disk};
 use crate::intake::{IntakeError, IntakeOptions, execute_intake};
@@ -185,6 +185,7 @@ pub fn resolve_branch_b_options(
         reasoning_budget: provider.reasoning_budget,
         gemini_api_key: provider.gemini_api_key.clone(),
         typesafe_api_key: provider.typesafe_api_key.clone(),
+        local_decision_endpoint: provider.local_decision_endpoint.clone(),
         screener_only_closure: false,
         env: env.clone(),
         stored_config,
@@ -255,11 +256,12 @@ pub(crate) fn build_live_model_provider(
         resolve_typesafe_api_key(options).ok()
     };
 
-    Ok(MultiModelProvider::with_retry_policy(
-        gemini_key,
-        typesafe_key,
-        retry_policy,
-    ))
+    let local_endpoint = resolve_local_decision_endpoint(options);
+
+    Ok(
+        MultiModelProvider::with_retry_policy(gemini_key, typesafe_key, retry_policy)
+            .with_local_endpoint(local_endpoint),
+    )
 }
 
 #[cfg(test)]

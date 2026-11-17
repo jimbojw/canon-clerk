@@ -15,13 +15,16 @@
 //! Core domain execution engine and hexagonal endpoint prober for the `probe` diagnostic stage (`docs/architecture/nodes/probe.md`).
 
 mod gemini_decisions;
+mod local_decision;
 mod typesafe;
 
 pub use gemini_decisions::{GeminiDecisionsEndpointProber, decode_gemini_decisions_probe_response};
+pub use local_decision::{LocalEndpointProber, decode_local_decision_probe_response};
 pub use typesafe::TypesafeEndpointProber;
 
 use crate::caseload::{
-    Caseload, CaseloadProbe, ProbeEndpointResult, ProbeStatus, TYPESAFE_PROVIDER, ThinkingLevel,
+    Caseload, CaseloadProbe, LOCAL_PROVIDER, ProbeEndpointResult, ProbeStatus, TYPESAFE_PROVIDER,
+    ThinkingLevel,
 };
 use crate::configure::{
     ENV_GEMINI_API_KEY, ENV_TYPESAFE_API_KEY, is_discriminative_model, model_provider,
@@ -209,19 +212,21 @@ fn resolve_endpoint_probe_key<'a>(
     model_specifier: &str,
     options: &'a ProbeOptions,
 ) -> Result<&'a str, ProbeError> {
-    if model_provider(model_specifier) == TYPESAFE_PROVIDER {
-        options
+    match model_provider(model_specifier) {
+        LOCAL_PROVIDER => Ok(""),
+        TYPESAFE_PROVIDER => options
             .typesafe_api_key
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or(ProbeError::MissingTypesafeApiKey)
-    } else {
-        let key = options.api_key.trim();
-        if key.is_empty() {
-            Err(ProbeError::MissingApiKey)
-        } else {
-            Ok(key)
+            .ok_or(ProbeError::MissingTypesafeApiKey),
+        _ => {
+            let key = options.api_key.trim();
+            if key.is_empty() {
+                Err(ProbeError::MissingApiKey)
+            } else {
+                Ok(key)
+            }
         }
     }
 }
@@ -380,6 +385,7 @@ pub struct MultiProviderEndpointProber {
     gemini: GeminiEndpointProber,
     gemini_decisions: GeminiDecisionsEndpointProber,
     typesafe: TypesafeEndpointProber,
+    local: LocalEndpointProber,
 }
 
 impl Default for MultiProviderEndpointProber {
@@ -398,10 +404,14 @@ impl MultiProviderEndpointProber {
                 DEFAULT_GEMINI_BASE_URL,
             ),
             gemini_decisions: GeminiDecisionsEndpointProber::with_client_and_base_url(
-                client,
+                client.clone(),
                 DEFAULT_GEMINI_BASE_URL,
             ),
             typesafe: TypesafeEndpointProber::new(),
+            local: LocalEndpointProber::with_client_and_base_url(
+                client,
+                crate::configure::DEFAULT_LOCAL_DECISION_ENDPOINT,
+            ),
         }
     }
 
@@ -418,11 +428,21 @@ impl MultiProviderEndpointProber {
                 gemini_base.clone(),
             ),
             gemini_decisions: GeminiDecisionsEndpointProber::with_client_and_base_url(
-                client,
+                client.clone(),
                 gemini_base,
             ),
             typesafe: TypesafeEndpointProber::with_base_url(typesafe_base_url),
+            local: LocalEndpointProber::with_client_and_base_url(
+                client,
+                crate::configure::DEFAULT_LOCAL_DECISION_ENDPOINT,
+            ),
         }
+    }
+
+    /// Overrides the localhost decision endpoint probed for `local:*` model specifiers.
+    pub fn with_local_endpoint(mut self, local_base_url: impl Into<String>) -> Self {
+        self.local = LocalEndpointProber::with_base_url(local_base_url);
+        self
     }
 }
 
@@ -435,7 +455,16 @@ impl EndpointProber for MultiProviderEndpointProber {
         thinking_level: Option<ThinkingLevel>,
         reasoning_budget: Option<u32>,
     ) -> ProbeEndpointResult {
-        if model_provider(model_specifier) == TYPESAFE_PROVIDER {
+        let prov = model_provider(model_specifier);
+        if prov == LOCAL_PROVIDER {
+            self.local.probe_endpoint(
+                model_specifier,
+                api_key,
+                timeout_ms,
+                thinking_level,
+                reasoning_budget,
+            )
+        } else if prov == TYPESAFE_PROVIDER {
             self.typesafe.probe_endpoint(
                 model_specifier,
                 api_key,

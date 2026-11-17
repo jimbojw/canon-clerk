@@ -24,6 +24,9 @@ pub const DEFAULT_PROVIDER: &str = "google";
 /// Canonical provider namespace for TypeSafe AI decision models (`typesafe:jev-*`).
 pub const TYPESAFE_PROVIDER: &str = "typesafe";
 
+/// Canonical provider namespace for localhost discriminative decision daemons (`local:<model>`).
+pub const LOCAL_PROVIDER: &str = "local";
+
 /// Default canonical screener model specifier (`docs/architecture/nodes/configure.md` §3).
 pub const DEFAULT_SCREENER_MODEL: &str = "google:gemini-decision-1";
 

@@ -14,7 +14,7 @@
 
 //! Host user-level configuration file (`~/.config/canon-clerk/config.json`) loader and security validators.
 
-use crate::caseload::{DEFAULT_PROVIDER, TYPESAFE_PROVIDER};
+use crate::caseload::{DEFAULT_PROVIDER, LOCAL_PROVIDER, TYPESAFE_PROVIDER};
 use crate::configure::ConfigureError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -27,6 +27,9 @@ pub struct StoredProviderConfig {
     /// Provider API key (`apiKey` or `api_key`).
     #[serde(alias = "apiKey", alias = "api_key")]
     pub api_key: Option<String>,
+    /// Optional provider base endpoint URL (`endpoint`, e.g. `providers.local.endpoint`).
+    #[serde(default)]
+    pub endpoint: Option<String>,
 }
 
 /// Model tier configuration entry supporting either a specifier string (`"google:gemini-pro-latest"`)
@@ -150,6 +153,20 @@ impl StoredConfig {
     /// Returns the non-empty TypeSafe AI API key stored under `providers.typesafe.apiKey`.
     pub fn typesafe_api_key(&self) -> Option<&str> {
         self.provider_api_key(TYPESAFE_PROVIDER)
+    }
+
+    /// Returns the non-empty endpoint URL configured under `providers.<slug>.endpoint`.
+    pub(crate) fn provider_endpoint(&self, slug: &str) -> Option<&str> {
+        self.providers
+            .get(slug)
+            .and_then(|p| p.endpoint.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Returns the non-empty local decision endpoint stored under `providers.local.endpoint`.
+    pub fn local_decision_endpoint(&self) -> Option<&str> {
+        self.provider_endpoint(LOCAL_PROVIDER)
     }
 
     /// Returns the stored screener model specifier if present.

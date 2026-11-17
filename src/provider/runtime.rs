@@ -48,6 +48,8 @@ pub(crate) struct RawHttpOutcome {
 /// Outbound authentication header scheme for a provider HTTP request.
 #[derive(Clone, Copy)]
 pub(crate) enum HttpAuth<'a> {
+    /// Credential-free localhost HTTP transport (`local:*`).
+    None,
     /// Google Generative Language API `x-goog-api-key` header.
     GoogApiKey(&'a str),
     /// Standard `Authorization: Bearer <token>` header.
@@ -57,6 +59,8 @@ pub(crate) enum HttpAuth<'a> {
 /// Owned authentication header scheme carried across async reactor boundaries.
 #[derive(Clone)]
 pub(crate) enum OwnedHttpAuth {
+    /// Credential-free localhost HTTP transport (`local:*`).
+    None,
     /// Google Generative Language API `x-goog-api-key` header.
     GoogApiKey(String),
     /// Standard `Authorization: Bearer <token>` header.
@@ -66,6 +70,7 @@ pub(crate) enum OwnedHttpAuth {
 impl HttpAuth<'_> {
     pub(crate) fn into_owned(self) -> OwnedHttpAuth {
         match self {
+            Self::None => OwnedHttpAuth::None,
             Self::GoogApiKey(key) => OwnedHttpAuth::GoogApiKey(key.to_string()),
             Self::Bearer(token) => OwnedHttpAuth::Bearer(token.to_string()),
         }
@@ -212,6 +217,7 @@ pub(crate) async fn execute_wire_attempt(
         .timeout(Duration::from_millis(req.timeout_ms))
         .header("Content-Type", JSON_MIME_TYPE);
     let builder = match &req.auth {
+        OwnedHttpAuth::None => builder,
         OwnedHttpAuth::GoogApiKey(key) => builder.header("x-goog-api-key", key),
         OwnedHttpAuth::Bearer(token) => builder.bearer_auth(token),
     };

@@ -155,7 +155,10 @@ pub fn run_probe(
     stdout: &mut dyn Write,
 ) -> Result<Caseload, CliError> {
     let env: BTreeMap<String, String> = env::vars().collect();
-    let prober = MultiProviderEndpointProber::new();
+    let local_endpoint = resolve_branch_b_options(&args.provider, &env)
+        .map(|opts| crate::configure::resolve_local_decision_endpoint(&opts))
+        .unwrap_or_else(|_| crate::configure::DEFAULT_LOCAL_DECISION_ENDPOINT.to_string());
+    let prober = MultiProviderEndpointProber::new().with_local_endpoint(local_endpoint);
     run_probe_with_env_and_prober(args, stdin, stdout, &env, &prober)
 }
 

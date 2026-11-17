@@ -18,6 +18,8 @@ pub mod decision;
 pub mod gemini;
 pub mod gemini_decisions;
 mod gemini_wire;
+pub mod local_decision;
+mod local_wire;
 mod requester;
 mod retry;
 mod retry_delay;
@@ -47,6 +49,15 @@ pub(crate) use gemini_decisions::{
     is_decision_context_limit_error, post_gemini_decisions_json,
 };
 pub(crate) use gemini_wire::{GeminiThinkingConfig, build_probe_thinking_config};
+pub use local_decision::{
+    LOCAL_DISCRIMINATOR_SYSTEM_PROMPT, LocalDecisionProvider, build_local_chat_completions_url,
+    classify_local_http_error,
+};
+pub(crate) use local_decision::{post_local_chat_json, strip_local_prefix};
+pub(crate) use local_wire::{
+    LocalChatCompletionRequest, LocalChatCompletionResponse, extract_local_error_detail,
+    normalize_local_model_label,
+};
 pub use requester::{RetryObserver, SharedHttpRequester};
 pub use retry::{
     DEFAULT_BASE_BACKOFF_MS, DEFAULT_COOLDOWN_SLOT_MS, DEFAULT_MAX_BACKOFF_MS, DEFAULT_MAX_RETRIES,
@@ -59,9 +70,12 @@ pub(crate) use typesafe::{
     strip_typesafe_prefix,
 };
 
-use crate::caseload::{DEFAULT_AUDITOR_MODEL, DEFAULT_SCREENER_MODEL, TYPESAFE_PROVIDER};
+use crate::caseload::{
+    DEFAULT_AUDITOR_MODEL, DEFAULT_SCREENER_MODEL, LOCAL_PROVIDER, TYPESAFE_PROVIDER,
+};
 use crate::configure::{
-    DEFAULT_JEV_MODEL, ENV_GEMINI_API_KEY, ENV_TYPESAFE_API_KEY, model_provider,
+    DEFAULT_JEV_MODEL, DEFAULT_LOCAL_DECISION_ENDPOINT, ENV_GEMINI_API_KEY, ENV_TYPESAFE_API_KEY,
+    model_provider,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -238,16 +252,25 @@ impl fmt::Display for ProviderError {
                 model_specifier,
                 message,
             } => {
-                let host = if model_provider(model_specifier) == TYPESAFE_PROVIDER {
-                    "api.typesafe.ai"
+                let prov = model_provider(model_specifier);
+                if prov == LOCAL_PROVIDER {
+                    write!(
+                        f,
+                        "Local discriminator connection failed for `{model_specifier}`: {message}\n  \
+                         Hint: Start `llama-server` (default: `{DEFAULT_LOCAL_DECISION_ENDPOINT}`) or override via `--local-decision-endpoint <URL>`."
+                    )
                 } else {
-                    "generativelanguage.googleapis.com"
-                };
-                write!(
-                    f,
-                    "Network connection failed for `{model_specifier}`: {message}\n  \
-                     Hint: Verify internet connectivity and DNS/TLS access to `{host}`."
-                )
+                    let host = if prov == TYPESAFE_PROVIDER {
+                        "api.typesafe.ai"
+                    } else {
+                        "generativelanguage.googleapis.com"
+                    };
+                    write!(
+                        f,
+                        "Network connection failed for `{model_specifier}`: {message}\n  \
+                         Hint: Verify internet connectivity and DNS/TLS access to `{host}`."
+                    )
+                }
             }
             Self::HttpStatus { diagnostic, .. } => f.write_str(diagnostic),
             Self::BlockedResponse {

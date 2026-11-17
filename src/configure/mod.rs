@@ -20,6 +20,7 @@ mod thinking;
 
 pub use providers::{
     MissingCredentialsReason, PROVIDER_CAPABILITIES, ProviderCapability, ProviderRole,
+    resolve_local_decision_endpoint,
 };
 pub(crate) use providers::{
     resolve_default_tiers, resolve_provider_api_key, verified_credential_env_vars,
@@ -32,7 +33,7 @@ pub use thinking::parse_thinking_level;
 
 use crate::caseload::{
     Caseload, CaseloadConfig, DEFAULT_AUDITOR_MODEL, DEFAULT_PROVIDER, DEFAULT_SCREENER_MODEL,
-    TYPESAFE_PROVIDER, ThinkingLevel,
+    LOCAL_PROVIDER, TYPESAFE_PROVIDER, ThinkingLevel,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -59,6 +60,15 @@ pub const ENV_REASONING_BUDGET: &str = "CANON_CLERK_REASONING_BUDGET";
 /// Default canonical TypeSafe AI Jev model specifier (`docs/architecture/nodes/configure.md` §4).
 pub const DEFAULT_JEV_MODEL: &str = "typesafe:jev-latest";
 
+/// Default localhost HTTP endpoint for `local:<model>` discriminative daemons.
+pub const DEFAULT_LOCAL_DECISION_ENDPOINT: &str = "http://127.0.0.1:8080";
+
+/// Primary namespace-qualified environment variable overriding `--local-decision-endpoint`.
+pub const ENV_CANON_CLERK_LOCAL_DECISION_ENDPOINT: &str = "CANON_CLERK_LOCAL_DECISION_ENDPOINT";
+
+/// Fallback provider-prefixed environment variable overriding `--local-decision-endpoint`.
+pub const ENV_LOCAL_DECISION_ENDPOINT: &str = "LOCAL_DECISION_ENDPOINT";
+
 /// Domain input parameters, environment snapshot, and optional user config store for `configure`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigureOptions {
@@ -74,6 +84,8 @@ pub struct ConfigureOptions {
     pub gemini_api_key: Option<String>,
     /// Explicit TypeSafe AI API key override (`--typesafe-api-key`).
     pub typesafe_api_key: Option<String>,
+    /// Explicit localhost decision daemon endpoint override (`--local-decision-endpoint`).
+    pub local_decision_endpoint: Option<String>,
     /// When `true` (screener-only closures: `apprise`, `docket`, `admit`, `vet`), verifies active
     /// credentials strictly for `screener_model` unless `auditor_model` was explicitly overridden.
     pub screener_only_closure: bool,
@@ -92,6 +104,7 @@ impl ConfigureOptions {
             || self.reasoning_budget.is_some()
             || self.gemini_api_key.is_some()
             || self.typesafe_api_key.is_some()
+            || self.local_decision_endpoint.is_some()
     }
 
     pub(crate) fn cli_api_key_for(&self, provider_slug: &str) -> Option<&str> {
@@ -156,8 +169,8 @@ impl fmt::Display for ConfigureError {
             } => write!(
                 f,
                 "Unsupported model provider `{provider}` in specifier `{specifier}`.\n  \
-                 Hint: Canon Clerk supports `google` (e.g. `{DEFAULT_SCREENER_MODEL}`, `{DEFAULT_AUDITOR_MODEL}`) \
-                 and `typesafe` (e.g. `{DEFAULT_JEV_MODEL}`)."
+                 Hint: Canon Clerk supports `google` (e.g. `{DEFAULT_SCREENER_MODEL}`, `{DEFAULT_AUDITOR_MODEL}`), \
+                 `typesafe` (e.g. `{DEFAULT_JEV_MODEL}`), and `local` (e.g. `local:qwen2.5-coder-1.5b-instruct`)."
             ),
             Self::InvalidModelSpecifier { specifier, reason } => write!(
                 f,
@@ -287,6 +300,18 @@ pub fn normalize_model_specifier(raw: &str) -> Result<String, ConfigureError> {
                 ),
             }),
         },
+        LOCAL_PROVIDER => {
+            if is_valid_local_model_name(model_part) {
+                Ok(format!("{LOCAL_PROVIDER}:{model_part}"))
+            } else {
+                Err(ConfigureError::InvalidModelSpecifier {
+                    specifier: raw.to_string(),
+                    reason: format!(
+                        "invalid local model `{model_part}` (expected `local:<model>`, e.g. `local:qwen2.5-coder-1.5b-instruct`)."
+                    ),
+                })
+            }
+        }
         _ => Err(ConfigureError::UnsupportedProvider {
             provider: provider.to_string(),
             specifier: trimmed.to_string(),
@@ -299,15 +324,24 @@ pub(crate) fn is_gemini_decision_model_name(name: &str) -> bool {
 }
 
 /// Returns `true` when `specifier` names a discriminative `Noul` decision model
-/// (`google:gemini-decision-*`, `gemini-decision-*`, `typesafe:*`, or `jev-*`).
+/// (`google:gemini-decision-*`, `gemini-decision-*`, `typesafe:*`, `jev-*`, or `local:*`).
 pub fn is_discriminative_model(specifier: &str) -> bool {
     let trimmed = specifier.trim();
     match trimmed.split_once(':') {
         Some((DEFAULT_PROVIDER, model_part)) => is_gemini_decision_model_name(model_part),
-        Some((TYPESAFE_PROVIDER, model_part)) => !model_part.is_empty(),
+        Some((TYPESAFE_PROVIDER | LOCAL_PROVIDER, model_part)) => !model_part.is_empty(),
         Some(_) => false,
         None => is_gemini_decision_model_name(trimmed) || is_valid_jev_model_name(trimmed),
     }
+}
+
+pub(crate) fn is_valid_local_model_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('/')
+        && !name.ends_with('/')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_' || c == '/')
 }
 
 fn is_valid_gemini_model_name(name: &str) -> bool {
@@ -619,6 +653,7 @@ mod tests {
                 "google".to_string(),
                 StoredProviderConfig {
                     api_key: Some("stored-google-key".to_string()),
+                    ..StoredProviderConfig::default()
                 },
             );
             let stored = StoredConfig {

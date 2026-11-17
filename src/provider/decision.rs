@@ -15,10 +15,11 @@
 //! Hexagonal outbound port, per-model decision budget profiles, and composite decision routing.
 
 use super::gemini_decisions::GeminiDecisionProvider;
+use super::local_decision::LocalDecisionProvider;
 use super::requester::{RetryObserver, SharedHttpRequester};
 use super::retry::RetryPolicy;
 pub use super::typesafe::TypesafeDecisionProvider;
-use crate::caseload::{DEFAULT_PROVIDER, TYPESAFE_PROVIDER};
+use crate::caseload::{DEFAULT_PROVIDER, LOCAL_PROVIDER, TYPESAFE_PROVIDER};
 use crate::configure::{is_discriminative_model, model_provider};
 use crate::provider::{
     GeminiModelProvider, GenerationRequest, GenerationResponse, ProviderError,
@@ -53,9 +54,19 @@ impl DecisionBudgetProfile {
         max_nouls_per_call: 48,
     };
 
+    /// Calibrated profile for local `8,192`-token discriminative daemons (`local:*`).
+    pub const LOCAL_DECISION: Self = Self {
+        max_state_chars: 16_000,
+        max_batch_chars: 24_000,
+        max_nouls_per_call: 24,
+    };
+
     /// Resolves the deterministic [`DecisionBudgetProfile`] for a discriminative model specifier.
     pub fn for_model(specifier: &str) -> Self {
-        if model_provider(specifier) == TYPESAFE_PROVIDER || specifier.trim().starts_with("jev-") {
+        let prov = model_provider(specifier);
+        if prov == LOCAL_PROVIDER {
+            Self::LOCAL_DECISION
+        } else if prov == TYPESAFE_PROVIDER || specifier.trim().starts_with("jev-") {
             Self::TYPESAFE_JEV
         } else {
             Self::GEMINI_DECISION
@@ -160,6 +171,7 @@ pub struct MultiModelProvider {
     gemini: Option<GeminiModelProvider>,
     gemini_decisions: Option<GeminiDecisionProvider>,
     typesafe: Option<TypesafeDecisionProvider>,
+    local: LocalDecisionProvider,
 }
 
 impl MultiModelProvider {
@@ -196,11 +208,13 @@ impl MultiModelProvider {
         };
         let typesafe = typesafe_api_key
             .filter(|k| !k.trim().is_empty())
-            .map(|key| TypesafeDecisionProvider::with_requester(key, requester));
+            .map(|key| TypesafeDecisionProvider::with_requester(key, requester.clone()));
+        let local = LocalDecisionProvider::with_requester(requester);
         Self {
             gemini,
             gemini_decisions,
             typesafe,
+            local,
         }
     }
 
@@ -214,7 +228,15 @@ impl MultiModelProvider {
             gemini,
             gemini_decisions,
             typesafe,
+            local: LocalDecisionProvider::new(),
         }
+    }
+
+    /// Overrides the localhost base URL used for `local:<model>` decision calls while preserving the shared requester.
+    pub fn with_local_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        let requester = self.local.requester().clone();
+        self.local = LocalDecisionProvider::with_requester_and_base_url(requester, endpoint);
+        self
     }
 }
 
@@ -252,6 +274,7 @@ impl DecisionModelProvider for MultiModelProvider {
                     .ok_or(ProviderError::MissingTypesafeApiKey)?;
                 adapter.evaluate_decisions_observed(request, on_retry)
             }
+            LOCAL_PROVIDER => self.local.evaluate_decisions_observed(request, on_retry),
             _ => Err(ProviderError::UnsupportedProvider {
                 provider: prov.to_string(),
                 model_specifier: request.model_specifier.clone(),
@@ -315,6 +338,7 @@ impl StructuredModelProvider for MultiModelProvider {
         if let Some(t) = &self.typesafe {
             t.requester().clear_abort();
         }
+        self.local.requester().clear_abort();
     }
 
     fn notify_abort(&self) {
@@ -327,6 +351,7 @@ impl StructuredModelProvider for MultiModelProvider {
         if let Some(t) = &self.typesafe {
             t.requester().notify_abort();
         }
+        self.local.requester().notify_abort();
     }
 }
 
