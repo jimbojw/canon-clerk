@@ -148,6 +148,16 @@ pub fn run_probe_with_env_and_prober(
     run_probe_with_telemetry(args, stdin, stdout, env, prober, &TelemetrySession::noop())
 }
 
+pub(crate) fn build_live_probe_prober(
+    args: &ProbeArgs,
+    env: &BTreeMap<String, String>,
+) -> MultiProviderEndpointProber {
+    let local_endpoint = resolve_branch_b_options(&args.provider, env)
+        .map(|opts| crate::configure::resolve_local_decision_endpoint(&opts))
+        .unwrap_or_else(|_| crate::configure::DEFAULT_LOCAL_DECISION_ENDPOINT.to_string());
+    MultiProviderEndpointProber::new().with_local_endpoint(local_endpoint)
+}
+
 /// Executes the `probe` CLI subcommand using the process environment and live [`MultiProviderEndpointProber`].
 pub fn run_probe(
     args: &ProbeArgs,
@@ -155,10 +165,7 @@ pub fn run_probe(
     stdout: &mut dyn Write,
 ) -> Result<Caseload, CliError> {
     let env: BTreeMap<String, String> = env::vars().collect();
-    let local_endpoint = resolve_branch_b_options(&args.provider, &env)
-        .map(|opts| crate::configure::resolve_local_decision_endpoint(&opts))
-        .unwrap_or_else(|_| crate::configure::DEFAULT_LOCAL_DECISION_ENDPOINT.to_string());
-    let prober = MultiProviderEndpointProber::new().with_local_endpoint(local_endpoint);
+    let prober = build_live_probe_prober(args, &env);
     run_probe_with_env_and_prober(args, stdin, stdout, &env, &prober)
 }
 

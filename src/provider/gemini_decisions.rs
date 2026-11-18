@@ -36,6 +36,7 @@ pub fn build_decisions_url(base_url: &str) -> String {
 pub(crate) fn is_decision_context_limit_error(detail: &str) -> bool {
     let lower = detail.to_ascii_lowercase();
     lower.contains("max_tokens_exceeded")
+        || (lower.contains("token") && lower.contains("too large"))
         || ((lower.contains("token") || lower.contains("context") || lower.contains("question"))
             && (lower.contains("exceed") || lower.contains("limit") || lower.contains("maximum")))
 }

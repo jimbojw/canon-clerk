@@ -86,7 +86,6 @@ pub use vet::{
     run_vet_with_telemetry,
 };
 
-use crate::probe::MultiProviderEndpointProber;
 use crate::telemetry::{SystemTelemetryClock, TelemetrySession};
 use clap::{CommandFactory, Parser, Subcommand};
 use std::collections::BTreeMap;
@@ -369,7 +368,7 @@ fn dispatch_subcommand(
             run_configure_with_telemetry(args, stdin, stdout, env_map, session)?;
         }
         Commands::Probe(args) => {
-            let prober = MultiProviderEndpointProber::new();
+            let prober = probe::build_live_probe_prober(args, env_map);
             run_probe_with_telemetry(args, stdin, stdout, env_map, &prober, session)?;
         }
         Commands::Apprise(args) => {

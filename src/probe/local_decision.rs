@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Localhost OpenAI-compatible (`/v1/chat/completions`) diagnostic endpoint prober implementation.
+//! Localhost cross-encoder (`/v1/rerank`) diagnostic endpoint prober implementation.
 
 use crate::caseload::{ProbeEndpointResult, ProbeStatus, ThinkingLevel};
 use crate::configure::DEFAULT_LOCAL_DECISION_ENDPOINT;
 use crate::probe::EndpointProber;
 use crate::provider::{
-    LocalChatCompletionRequest, LocalChatCompletionResponse, build_pooled_http_client,
-    classify_local_http_error, extract_local_error_detail, normalize_local_model_label,
-    post_local_chat_json, strip_local_prefix,
+    LocalRerankRequest, LocalRerankResponse, build_pooled_http_client, classify_local_http_error,
+    extract_local_error_detail, normalize_local_model_label, post_local_rerank_json,
+    strip_local_prefix,
 };
 
-/// Decodes and classifies an HTTP status code and response payload from a local `/v1/chat/completions` probe.
+/// Decodes and classifies an HTTP status code and response payload from a local `/v1/rerank` probe.
 pub fn decode_local_decision_probe_response(
     status_code: u16,
     body: &str,
@@ -31,9 +31,31 @@ pub fn decode_local_decision_probe_response(
     latency_ms: u64,
 ) -> ProbeEndpointResult {
     if (200..300).contains(&status_code) {
-        let resolved_model = serde_json::from_str::<LocalChatCompletionResponse>(body)
-            .ok()
-            .and_then(|resp| resp.model)
+        let Ok(parsed) = serde_json::from_str::<LocalRerankResponse>(body) else {
+            return ProbeEndpointResult {
+                status: ProbeStatus::Error,
+                latency_ms,
+                model: model_specifier.to_string(),
+                error: Some(format!(
+                    "Malformed `/v1/rerank` JSON response from `{model_specifier}`. \
+                     Hint: Ensure `llama-server` is started with `--reranking --pooling rank`."
+                )),
+            };
+        };
+        if parsed.results.is_empty() {
+            return ProbeEndpointResult {
+                status: ProbeStatus::Error,
+                latency_ms,
+                model: model_specifier.to_string(),
+                error: Some(format!(
+                    "Empty `results` array returned by `/v1/rerank` for `{model_specifier}`. \
+                     Hint: Ensure `llama-server` is started with `--reranking --pooling rank`."
+                )),
+            };
+        }
+
+        let resolved_model = parsed
+            .model
             .as_deref()
             .map(normalize_local_model_label)
             .filter(|v| !v.is_empty())
@@ -57,7 +79,7 @@ pub fn decode_local_decision_probe_response(
     }
 }
 
-/// Live localhost HTTP implementation of [`EndpointProber`] (`POST /v1/chat/completions`).
+/// Live localhost HTTP implementation of [`EndpointProber`] (`POST /v1/rerank`).
 #[derive(Debug, Clone)]
 pub struct LocalEndpointProber {
     base_url: String,
@@ -99,13 +121,9 @@ impl EndpointProber for LocalEndpointProber {
         _thinking_level: Option<ThinkingLevel>,
         _reasoning_budget: Option<u32>,
     ) -> ProbeEndpointResult {
-        let payload = LocalChatCompletionRequest::new(
-            strip_local_prefix(model_specifier),
-            "ping",
-            "Question: Is the input non-empty?\n- Answer YES if non-empty.\n- Answer NO if empty.",
-        );
+        let payload = LocalRerankRequest::new_probe(strip_local_prefix(model_specifier));
 
-        match post_local_chat_json(
+        match post_local_rerank_json(
             &self.client,
             &self.base_url,
             model_specifier,

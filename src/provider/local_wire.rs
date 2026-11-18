@@ -12,110 +12,130 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! OpenAI-compatible `/v1/chat/completions` wire envelopes and calibrated two-class `YES`/`NO` logprob softmax decoding.
+//! Localhost `/v1/rerank` cross-encoder wire envelopes and calibrated `[0.0, 1.0]` score decoding.
 
-use super::local_decision::LOCAL_DISCRIMINATOR_SYSTEM_PROMPT;
+use super::local_project::{
+    build_compact_admit_query, build_compact_jurisdiction_query, extract_canon_invariant_doc,
+    is_admit_screening_batch, is_canon_screening_batch, project_admit_question_doc,
+    project_vet_compliance,
+};
 use crate::provider::{ProviderError, TokenUsage};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-const DEFAULT_TOP_LOGPROBS: u8 = 5;
+const COMPLIANCE_SINGLE_QUESTION_KEY: &str = "compliant";
+const SCORE_EPSILON: f64 = 1e-6;
 
-/// Chat message item in an OpenAI-compatible `/v1/chat/completions` request.
+/// Request payload for `POST /v1/rerank` against a local rank-head discriminator (`llama-server --reranking --pooling rank`, `vLLM`, `TEI`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct LocalChatMessage {
-    pub(crate) role: String,
-    pub(crate) content: String,
-}
-
-/// Request payload for `POST /v1/chat/completions` against a local logprob discriminator (`llama-server`, `vLLM`, `SGLang`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct LocalChatCompletionRequest {
+pub(crate) struct LocalRerankRequest {
     pub(crate) model: String,
-    pub(crate) messages: Vec<LocalChatMessage>,
-    pub(crate) max_tokens: u32,
-    pub(crate) temperature: f32,
-    pub(crate) logprobs: bool,
-    pub(crate) top_logprobs: u8,
-    pub(crate) cache_prompt: bool,
+    pub(crate) query: String,
+    pub(crate) documents: Vec<String>,
 }
 
-impl LocalChatCompletionRequest {
-    pub(crate) fn new(model: impl Into<String>, state: &str, instructions: &str) -> Self {
-        let user_content = format!("State (`state`):\n{state}\n\n---\n\n{instructions}");
+impl LocalRerankRequest {
+    /// Maps a [`DecisionRequest`](crate::provider::DecisionRequest) into a batched `(query, documents)`
+    /// cross-encoder payload alongside the deterministic `domain_key` ordering corresponding to `documents[index]`.
+    ///
+    /// - Single-question compliance vetting (`questions == {"compliant": rubric}`): places the compliance
+    ///   rubric in `query` and `[state]` (governing canon + admitted exhibits) in `documents` so the
+    ///   cross-encoder judges candidate compliance against the query requirement.
+    /// - Multi-question or subject-keyed screening (`apprise`, `docket`, `admit`): places the shared
+    ///   filing/exhibit `state` in `query` and the ordered `Noul` question prompts in `documents` so all
+    ///   items evaluate in one batched forward pass.
+    pub(crate) fn from_decision_request(
+        model: impl Into<String>,
+        state: &str,
+        questions: &BTreeMap<String, String>,
+    ) -> (Vec<String>, Self) {
+        if questions.len() == 1
+            && let Some((key, rubric)) = questions.iter().next()
+            && key == COMPLIANCE_SINGLE_QUESTION_KEY
+        {
+            let (query, doc) = project_vet_compliance(state, rubric);
+            return (
+                vec![key.clone()],
+                Self {
+                    model: model.into(),
+                    query,
+                    documents: vec![doc],
+                },
+            );
+        }
+
+        let is_canon_batch = !questions.is_empty() && is_canon_screening_batch(questions.values());
+        let is_admit_batch = !is_canon_batch
+            && !questions.is_empty()
+            && is_admit_screening_batch(questions.values());
+
+        let query = if is_canon_batch {
+            build_compact_jurisdiction_query(state)
+        } else if is_admit_batch {
+            build_compact_admit_query(state)
+        } else {
+            state.to_string()
+        };
+
+        let mut ordered_keys = Vec::with_capacity(questions.len());
+        let mut documents = Vec::with_capacity(questions.len());
+        for (domain_key, question_text) in questions {
+            ordered_keys.push(domain_key.clone());
+            let doc = if is_canon_batch {
+                extract_canon_invariant_doc(question_text)
+            } else if is_admit_batch {
+                project_admit_question_doc(question_text)
+            } else {
+                question_text.clone()
+            };
+            documents.push(doc);
+        }
+        (
+            ordered_keys,
+            Self {
+                model: model.into(),
+                query,
+                documents,
+            },
+        )
+    }
+
+    /// Constructs a minimal 1-document connectivity probe payload for `POST /v1/rerank`.
+    pub(crate) fn new_probe(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
-            messages: vec![
-                LocalChatMessage {
-                    role: "system".to_string(),
-                    content: LOCAL_DISCRIMINATOR_SYSTEM_PROMPT.to_string(),
-                },
-                LocalChatMessage {
-                    role: "user".to_string(),
-                    content: user_content,
-                },
-            ],
-            max_tokens: 1,
-            temperature: 0.0,
-            logprobs: true,
-            top_logprobs: DEFAULT_TOP_LOGPROBS,
-            cache_prompt: true,
+            query: "Is the candidate document non-empty?".to_string(),
+            documents: vec!["ping".to_string()],
         }
     }
 }
 
+/// Scored document item returned inside a `/v1/rerank` `results` array.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub(crate) struct LocalTopLogprob {
-    pub(crate) token: String,
-    pub(crate) logprob: f64,
+pub(crate) struct LocalRerankResultItem {
+    pub(crate) index: usize,
+    #[serde(alias = "score")]
+    pub(crate) relevance_score: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub(crate) struct LocalTokenLogprob {
-    pub(crate) token: String,
-    pub(crate) logprob: f64,
-    #[serde(default)]
-    pub(crate) top_logprobs: Vec<LocalTopLogprob>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
-pub(crate) struct LocalChoiceLogprobs {
-    #[serde(default)]
-    pub(crate) content: Vec<LocalTokenLogprob>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
-pub(crate) struct LocalAssistantMessage {
-    #[serde(default)]
-    pub(crate) content: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub(crate) struct LocalChatChoice {
-    #[serde(default)]
-    pub(crate) message: LocalAssistantMessage,
-    #[serde(default)]
-    pub(crate) logprobs: Option<LocalChoiceLogprobs>,
-}
-
+/// Token accounting block returned by `/v1/rerank`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-pub(crate) struct LocalChatUsage {
+pub(crate) struct LocalRerankUsage {
     #[serde(default)]
     pub(crate) prompt_tokens: u64,
-    #[serde(default)]
-    pub(crate) completion_tokens: u64,
     #[serde(default)]
     pub(crate) total_tokens: Option<u64>,
 }
 
+/// Response envelope returned by `POST /v1/rerank`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub(crate) struct LocalChatCompletionResponse {
+pub(crate) struct LocalRerankResponse {
     #[serde(default)]
     pub(crate) model: Option<String>,
     #[serde(default)]
-    pub(crate) choices: Vec<LocalChatChoice>,
+    pub(crate) results: Vec<LocalRerankResultItem>,
     #[serde(default)]
-    pub(crate) usage: Option<LocalChatUsage>,
+    pub(crate) usage: Option<LocalRerankUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,117 +174,75 @@ pub(crate) fn extract_local_error_detail(body: &str) -> String {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TokenPolarity {
-    Affirmative,
-    Negative,
-}
-
-fn classify_polarity(raw_token: &str) -> Option<TokenPolarity> {
-    let cleaned = raw_token
-        .trim()
-        .trim_matches(|c: char| c.is_ascii_punctuation());
-    if cleaned.eq_ignore_ascii_case("yes") {
-        Some(TokenPolarity::Affirmative)
-    } else if cleaned.eq_ignore_ascii_case("no") {
-        Some(TokenPolarity::Negative)
-    } else {
-        None
-    }
-}
-
-fn decode_choice_yes_probability(choice: &LocalChatChoice) -> Result<f64, String> {
-    if let Some(first_tok) = choice.logprobs.as_ref().and_then(|lp| lp.content.first())
-        && let Some(prob) = compute_logprob_softmax(first_tok)
-    {
-        return Ok(prob);
-    }
-
-    if let Some(text) = choice.message.content.as_deref() {
-        match classify_polarity(text) {
-            Some(TokenPolarity::Affirmative) => return Ok(1.0),
-            Some(TokenPolarity::Negative) => return Ok(0.0),
-            None => {}
-        }
-    }
-
-    Err(
-        "response lacked calibratable `YES`/`NO` token logprobs or polar completion content"
-            .to_string(),
-    )
-}
-
-fn compute_logprob_softmax(first_tok: &LocalTokenLogprob) -> Option<f64> {
-    let mut unique_tokens: BTreeMap<&str, f64> = BTreeMap::new();
-    if first_tok.logprob.is_finite() {
-        unique_tokens.insert(first_tok.token.as_str(), first_tok.logprob);
-    }
-    for entry in &first_tok.top_logprobs {
-        if entry.logprob.is_finite() {
-            unique_tokens
-                .entry(entry.token.as_str())
-                .and_modify(|prev| *prev = prev.max(entry.logprob))
-                .or_insert(entry.logprob);
-        }
-    }
-
-    let mut aff_mass = 0.0_f64;
-    let mut neg_mass = 0.0_f64;
-    let mut total_top_mass = 0.0_f64;
-    let mut min_top_lp = f64::INFINITY;
-
-    for (tok, lp) in unique_tokens {
-        let p = lp.exp();
-        total_top_mass += p;
-        min_top_lp = min_top_lp.min(lp);
-        match classify_polarity(tok) {
-            Some(TokenPolarity::Affirmative) => aff_mass += p,
-            Some(TokenPolarity::Negative) => neg_mass += p,
-            None => {}
-        }
-    }
-
-    if aff_mass > 0.0 && neg_mass > 0.0 {
-        return Some((aff_mass / (aff_mass + neg_mass)).clamp(0.0, 1.0));
-    }
-    let tail_bound = if min_top_lp.is_finite() {
-        (1.0 - total_top_mass).clamp(0.0, min_top_lp.exp())
-    } else {
-        0.0
-    };
-    if aff_mass > 0.0 {
-        return Some((aff_mass / (aff_mass + tail_bound)).clamp(0.0, 1.0));
-    }
-    if neg_mass > 0.0 {
-        return Some((tail_bound / (neg_mass + tail_bound)).clamp(0.0, 1.0));
-    }
-    None
-}
-
-pub(crate) fn decode_single_completion(
-    body: &str,
+fn calibrate_relevance_score(
+    raw_score: f64,
     model_specifier: &str,
     domain_key: &str,
-) -> Result<(f64, Option<String>, TokenUsage), ProviderError> {
-    let parsed: LocalChatCompletionResponse =
+) -> Result<f64, ProviderError> {
+    if !raw_score.is_finite() || !(-SCORE_EPSILON..=1.0 + SCORE_EPSILON).contains(&raw_score) {
+        return Err(ProviderError::SchemaDecode {
+            model_specifier: model_specifier.to_string(),
+            message: format!(
+                "local `/v1/rerank` returned non-calibrated score `{raw_score}` outside `[0.0, 1.0]` for `{domain_key}` \
+                 (verify `--pooling rank` and `cls.output.weight` on the GGUF model)"
+            ),
+        });
+    }
+    Ok(raw_score.clamp(0.0, 1.0))
+}
+
+pub(crate) struct DecodedRerankBatch {
+    pub(crate) scores: BTreeMap<String, f64>,
+    pub(crate) resolved_model: Option<String>,
+    pub(crate) usage: TokenUsage,
+}
+
+pub(crate) fn decode_rerank_batch(
+    body: &str,
+    model_specifier: &str,
+    ordered_keys: &[String],
+) -> Result<DecodedRerankBatch, ProviderError> {
+    let parsed: LocalRerankResponse =
         serde_json::from_str(body).map_err(|err| ProviderError::MalformedResponse {
             model_specifier: model_specifier.to_string(),
-            reason: format!("invalid local `/v1/chat/completions` JSON envelope ({err})"),
+            reason: format!("invalid local `/v1/rerank` JSON envelope ({err})"),
         })?;
 
-    let choice = parsed
-        .choices
-        .first()
-        .ok_or_else(|| ProviderError::MalformedResponse {
+    if parsed.results.len() != ordered_keys.len() {
+        return Err(ProviderError::MalformedResponse {
             model_specifier: model_specifier.to_string(),
-            reason: "empty `choices` array in local `/v1/chat/completions` response".to_string(),
-        })?;
+            reason: format!(
+                "expected {} `/v1/rerank` result item(s), got {}",
+                ordered_keys.len(),
+                parsed.results.len()
+            ),
+        });
+    }
 
-    let score =
-        decode_choice_yes_probability(choice).map_err(|reason| ProviderError::SchemaDecode {
-            model_specifier: model_specifier.to_string(),
-            message: format!("failed to calibrate `noul` score for `{domain_key}`: {reason}"),
-        })?;
+    let mut scores = BTreeMap::new();
+    for item in &parsed.results {
+        let Some(domain_key) = ordered_keys.get(item.index) else {
+            return Err(ProviderError::SchemaDecode {
+                model_specifier: model_specifier.to_string(),
+                message: format!(
+                    "out-of-bounds `/v1/rerank` document index {} for batch of len {}",
+                    item.index,
+                    ordered_keys.len()
+                ),
+            });
+        };
+        let calibrated =
+            calibrate_relevance_score(item.relevance_score, model_specifier, domain_key)?;
+        if scores.insert(domain_key.clone(), calibrated).is_some() {
+            return Err(ProviderError::SchemaDecode {
+                model_specifier: model_specifier.to_string(),
+                message: format!(
+                    "duplicate `/v1/rerank` result index {} (`{domain_key}`)",
+                    item.index
+                ),
+            });
+        }
+    }
 
     let resolved = parsed
         .model
@@ -275,16 +253,18 @@ pub(crate) fn decode_single_completion(
     let usage = match parsed.usage {
         Some(u) => TokenUsage {
             prompt_tokens: u.prompt_tokens,
-            completion_tokens: u.completion_tokens,
+            completion_tokens: 0,
             reasoning_tokens: 0,
-            total_tokens: u
-                .total_tokens
-                .unwrap_or_else(|| u.prompt_tokens.saturating_add(u.completion_tokens)),
+            total_tokens: u.total_tokens.unwrap_or(u.prompt_tokens),
         },
         None => TokenUsage::default(),
     };
 
-    Ok((score, resolved, usage))
+    Ok(DecodedRerankBatch {
+        scores,
+        resolved_model: resolved,
+        usage,
+    })
 }
 
 pub(crate) fn normalize_local_model_label(raw: &str) -> String {

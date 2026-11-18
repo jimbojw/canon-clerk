@@ -12,14 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Localhost OpenAI-compatible logprob discriminator adapter (`POST /v1/chat/completions` with `max_tokens: 1`
-//! and two-class `YES`/`NO` softmax) implementing [`DecisionModelProvider`].
+//! Localhost cross-encoder discriminator adapter (`POST /v1/rerank` via `llama-server --reranking --pooling rank`)
+//! implementing [`DecisionModelProvider`].
 
 use super::decision::{DecisionModelProvider, DecisionRequest, DecisionResponse};
 use super::gemini_decisions::is_decision_context_limit_error;
-use super::local_wire::{
-    LocalChatCompletionRequest, decode_single_completion, extract_local_error_detail,
-};
+use super::local_wire::{LocalRerankRequest, decode_rerank_batch, extract_local_error_detail};
 use super::requester::{RetryObserver, RetryablePostRequest, SharedHttpRequester};
 use super::retry::RetryPolicy;
 use super::runtime::{HttpAuth, JsonPostRequest, RawHttpOutcome, execute_json_post};
@@ -33,10 +31,6 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-/// System instruction constraining the local discriminator to single-token `"YES"` / `"NO"` classification.
-pub const LOCAL_DISCRIMINATOR_SYSTEM_PROMPT: &str =
-    "You are a precise code governance discriminator. Answer strictly with \"YES\" or \"NO\".";
-
 /// Strips the canonical `"local:"` provider prefix from a normalized model specifier.
 pub(crate) fn strip_local_prefix(model_specifier: &str) -> &str {
     match model_specifier.trim().strip_prefix(LOCAL_PROVIDER) {
@@ -45,28 +39,28 @@ pub(crate) fn strip_local_prefix(model_specifier: &str) -> &str {
     }
 }
 
-/// Constructs the OpenAI-compatible `POST /v1/chat/completions` URL from a base endpoint URL.
-pub fn build_local_chat_completions_url(base_url: &str) -> String {
+/// Constructs the OpenAI/Jina-compatible `POST /v1/rerank` URL from a base endpoint URL.
+pub fn build_local_rerank_url(base_url: &str) -> String {
     let trimmed = base_url.trim().trim_end_matches('/');
-    if let Some(origin) = trimmed.strip_suffix("/v1/chat/completions") {
-        format!("{origin}/v1/chat/completions")
+    if let Some(origin) = trimmed.strip_suffix("/v1/rerank") {
+        format!("{origin}/v1/rerank")
     } else if trimmed.ends_with("/v1") {
-        format!("{trimmed}/chat/completions")
+        format!("{trimmed}/rerank")
     } else {
-        format!("{trimmed}/v1/chat/completions")
+        format!("{trimmed}/v1/rerank")
     }
 }
 
-/// Formats an HTTP error status code from a localhost decision server into an actionable diagnostic.
+/// Formats an HTTP error status code from a localhost `/v1/rerank` discriminator daemon into an actionable diagnostic.
 pub fn classify_local_http_error(status_code: u16, model_specifier: &str, detail: &str) -> String {
     match status_code {
-        400 if is_decision_context_limit_error(detail) => format!(
-            "HTTP 400: Input context exceeded local discriminator window for `{model_specifier}` ({detail}). \
-             Hint: Increase `--ctx-size` on `llama-server` or narrow target scope."
+        400 | 500 if is_decision_context_limit_error(detail) => format!(
+            "HTTP {status_code}: Input context exceeded local discriminator window for `{model_specifier}` ({detail}). \
+             Hint: Increase `--ctx-size` / `--ubatch-size` on `llama-server` or narrow target scope."
         ),
-        404 => format!(
-            "HTTP 404: Local `/v1/chat/completions` endpoint or model `{model_specifier}` was not found ({detail}). \
-             Hint: Verify `--local-decision-endpoint` / `{ENV_CANON_CLERK_LOCAL_DECISION_ENDPOINT}` (default: `{DEFAULT_LOCAL_DECISION_ENDPOINT}`)."
+        404 | 501 => format!(
+            "HTTP {status_code}: Local `/v1/rerank` endpoint was not found or reranking is disabled for `{model_specifier}` ({detail}). \
+             Hint: Start `llama-server` with `--reranking --pooling rank` and verify `--local-decision-endpoint` / `{ENV_CANON_CLERK_LOCAL_DECISION_ENDPOINT}` (default: `{DEFAULT_LOCAL_DECISION_ENDPOINT}`)."
         ),
         500..=599 => format!(
             "HTTP {status_code}: Local discriminator daemon returned a server error for `{model_specifier}` ({detail}). \
@@ -74,7 +68,7 @@ pub fn classify_local_http_error(status_code: u16, model_specifier: &str, detail
         ),
         _ => format!(
             "HTTP {status_code}: Local discriminator rejected request for `{model_specifier}` ({detail}). \
-             Hint: Verify `llama-server` compatibility with `/v1/chat/completions` and `logprobs: true`."
+             Hint: Verify `llama-server --reranking --pooling rank` compatibility on `{DEFAULT_LOCAL_DECISION_ENDPOINT}/v1/rerank`."
         ),
     }
 }
@@ -86,22 +80,27 @@ fn build_local_http_status_error(
 ) -> ProviderError {
     let detail = extract_local_error_detail(body);
     let diagnostic = classify_local_http_error(status_code, model_specifier, &detail);
+    let effective_status = if status_code == 500 && is_decision_context_limit_error(&detail) {
+        400
+    } else {
+        status_code
+    };
     ProviderError::HttpStatus {
-        status_code,
+        status_code: effective_status,
         model_specifier: model_specifier.to_string(),
         detail,
         diagnostic,
     }
 }
 
-pub(crate) fn post_local_chat_json<T: Serialize>(
+pub(crate) fn post_local_rerank_json<T: Serialize>(
     client: &reqwest::Client,
     base_url: &str,
     model_specifier: &str,
     timeout_ms: u64,
     payload: &T,
 ) -> Result<RawHttpOutcome, (ProviderError, u64)> {
-    let url = build_local_chat_completions_url(base_url);
+    let url = build_local_rerank_url(base_url);
     let req = JsonPostRequest {
         url: &url,
         model_specifier,
@@ -140,7 +139,7 @@ fn validate_local_specifier(raw: &str) -> Result<&str, ProviderError> {
     Ok(model_id)
 }
 
-/// Pooled localhost HTTP adapter implementing [`DecisionModelProvider`] via `/v1/chat/completions` logprobs.
+/// Pooled localhost HTTP adapter implementing [`DecisionModelProvider`] via batched `POST /v1/rerank`.
 #[derive(Debug, Clone)]
 pub struct LocalDecisionProvider {
     base_url: String,
@@ -227,49 +226,41 @@ impl DecisionModelProvider for LocalDecisionProvider {
             });
         }
 
-        // Serialize shared-`state` question batches so concurrent stage workers do not evict
-        // a single-slot local server's KV prefix cache mid-batch.
+        // Serialize `/v1/rerank` batches so concurrent stage workers do not oversubscribe
+        // a single local daemon's unified KV pool (`n_slots = 4`) across simultaneous requests.
         let _batch_guard = self
             .batch_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
 
-        let url = build_local_chat_completions_url(&self.base_url);
-        let mut scores = BTreeMap::new();
-        let mut resolved_model = request.model_specifier.clone();
-        let mut total_latency_ms = 0_u64;
-        let mut total_usage = TokenUsage::default();
+        let url = build_local_rerank_url(&self.base_url);
+        let (ordered_keys, payload) =
+            LocalRerankRequest::from_decision_request(model_id, &request.state, &request.questions);
+        let fallback_label = ordered_keys.first().map(String::as_str);
 
-        for (domain_key, instructions) in &request.questions {
-            let payload = LocalChatCompletionRequest::new(model_id, &request.state, instructions);
-            let outcome = self.requester.execute_json_post(
-                &RetryablePostRequest {
-                    url: &url,
-                    model_specifier: &request.model_specifier,
-                    auth: HttpAuth::None,
-                    timeout_ms: request.timeout_ms,
-                    call_label: request.call_label.as_deref().or(Some(domain_key.as_str())),
-                    format_http_error: build_local_http_status_error,
-                },
-                &payload,
-                on_retry,
-            )?;
+        let outcome = self.requester.execute_json_post(
+            &RetryablePostRequest {
+                url: &url,
+                model_specifier: &request.model_specifier,
+                auth: HttpAuth::None,
+                timeout_ms: request.timeout_ms,
+                call_label: request.call_label.as_deref().or(fallback_label),
+                format_http_error: build_local_http_status_error,
+            },
+            &payload,
+            on_retry,
+        )?;
 
-            let (score, upstream_model, usage) =
-                decode_single_completion(&outcome.body, &request.model_specifier, domain_key)?;
-            if let Some(m) = upstream_model {
-                resolved_model = m;
-            }
-            total_latency_ms = total_latency_ms.saturating_add(outcome.latency_ms);
-            total_usage.accumulate(usage);
-            scores.insert(domain_key.clone(), score);
-        }
+        let decoded = decode_rerank_batch(&outcome.body, &request.model_specifier, &ordered_keys)?;
+        let resolved_model = decoded
+            .resolved_model
+            .unwrap_or_else(|| request.model_specifier.clone());
 
         Ok(DecisionResponse {
-            scores,
+            scores: decoded.scores,
             resolved_model,
-            latency_ms: total_latency_ms,
-            usage: total_usage,
+            latency_ms: outcome.latency_ms,
+            usage: decoded.usage,
         })
     }
 }
@@ -283,77 +274,57 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn test_url_builder_and_two_class_logprob_softmax() {
+    fn test_url_builder_orientation_and_rerank_batch_decoding() {
         assert_eq!(
-            build_local_chat_completions_url("http://127.0.0.1:8080/"),
-            "http://127.0.0.1:8080/v1/chat/completions"
+            build_local_rerank_url("http://127.0.0.1:8080/"),
+            "http://127.0.0.1:8080/v1/rerank"
         );
         assert_eq!(
-            build_local_chat_completions_url("http://127.0.0.1:8080/v1"),
-            "http://127.0.0.1:8080/v1/chat/completions"
+            build_local_rerank_url("http://127.0.0.1:8080/v1"),
+            "http://127.0.0.1:8080/v1/rerank"
         );
         assert_eq!(
-            strip_local_prefix("local:qwen2.5-coder-1.5b-instruct"),
-            "qwen2.5-coder-1.5b-instruct"
+            build_local_rerank_url("http://127.0.0.1:8080/v1/rerank/"),
+            "http://127.0.0.1:8080/v1/rerank"
+        );
+        assert_eq!(
+            strip_local_prefix("local:qwen3-reranker-0.6b"),
+            "qwen3-reranker-0.6b"
         );
 
-        let pos_json = r#"{
-            "model": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
-            "choices": [{
-                "message": { "content": "YES" },
-                "logprobs": {
-                    "content": [{
-                        "token": "YES",
-                        "logprob": -0.208,
-                        "top_logprobs": [
-                            { "token": "YES", "logprob": -0.208 },
-                            { "token": "NO", "logprob": -1.737 }
-                        ]
-                    }]
-                }
-            }],
-            "usage": { "prompt_tokens": 92, "completion_tokens": 1, "total_tokens": 93 }
-        }"#;
-        let (pos_score, resolved, usage) = decode_single_completion(
-            pos_json,
-            "local:qwen2.5-coder-1.5b-instruct",
-            "cli-flags.md",
-        )
-        .expect("decode positive completion");
-        assert!((pos_score - 0.822).abs() < 0.002);
-        assert_eq!(
-            resolved.as_deref(),
-            Some("qwen2.5-coder-1.5b-instruct-q4_k_m.gguf")
+        let (vet_keys, vet_req) = LocalRerankRequest::from_decision_request(
+            "qwen3-reranker-0.6b",
+            "Governing Canon + Exhibit Diff",
+            &BTreeMap::from([("compliant".to_string(), "Judge compliance?".to_string())]),
         );
-        assert_eq!(usage.prompt_tokens, 92);
-        assert_eq!(usage.total_tokens, 93);
+        assert_eq!(vet_keys, vec!["compliant".to_string()]);
+        assert_eq!(vet_req.query, "Judge compliance?");
+        assert_eq!(vet_req.documents, vec!["Governing Canon + Exhibit Diff"]);
 
-        let neg_json = r#"{
-            "choices": [{
-                "message": { "content": "NO" },
-                "logprobs": {
-                    "content": [{
-                        "token": "NO",
-                        "logprob": -0.212,
-                        "top_logprobs": [
-                            { "token": "NO", "logprob": -0.212 },
-                            { "token": "YES", "logprob": -1.696 }
-                        ]
-                    }]
-                }
-            }]
+        let out_of_order_json = r#"{
+            "model": "/home/user/.cache/models/qwen3-reranker-0.6b-q8_0.gguf",
+            "object": "list",
+            "usage": { "prompt_tokens": 256, "total_tokens": 256 },
+            "results": [
+                { "index": 1, "relevance_score": 0.0124 },
+                { "index": 0, "relevance_score": 0.9885 }
+            ]
         }"#;
-        let (neg_score, _, _) = decode_single_completion(
-            neg_json,
-            "local:qwen2.5-coder-1.5b-instruct",
-            "cli-flags.md",
-        )
-        .expect("decode negative completion");
-        assert!((neg_score - 0.185).abs() < 0.005);
+        let keys = vec!["cli-flags.md".to_string(), "signal-tests.md".to_string()];
+        let decoded = decode_rerank_batch(out_of_order_json, "local:qwen3-reranker-0.6b", &keys)
+            .expect("decode out-of-order rerank results");
+        assert!((decoded.scores["cli-flags.md"] - 0.9885).abs() < 1e-6);
+        assert!((decoded.scores["signal-tests.md"] - 0.0124).abs() < 1e-6);
+        assert_eq!(
+            decoded.resolved_model.as_deref(),
+            Some("qwen3-reranker-0.6b-q8_0.gguf")
+        );
+        assert_eq!(decoded.usage.prompt_tokens, 256);
+        assert_eq!(decoded.usage.total_tokens, 256);
     }
 
     #[test]
-    fn test_loopback_multi_question_batch_reuses_pooled_socket_without_auth_header() {
+    fn test_loopback_multi_question_batch_executes_single_rerank_post_and_reuses_socket() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let addr = listener.local_addr().expect("local addr");
 
@@ -362,17 +333,19 @@ mod tests {
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .expect("set timeout");
-            for idx in 1..=2 {
+            for call_idx in 1..=2 {
                 let mut raw = Vec::new();
                 let mut buf = [0_u8; 4096];
-                loop {
+                let req_body = loop {
                     let n = stream.read(&mut buf).expect("read");
-                    if n == 0 {
-                        break;
-                    }
+                    assert!(n > 0, "unexpected EOF before HTTP body");
                     raw.extend_from_slice(&buf[..n]);
                     let text = String::from_utf8_lossy(&raw);
                     if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        assert!(
+                            head.starts_with("POST /v1/rerank HTTP/1.1"),
+                            "expected POST /v1/rerank, got: {head}"
+                        );
                         assert!(
                             !head.to_ascii_lowercase().contains("authorization:")
                                 && !head.to_ascii_lowercase().contains("x-goog-api-key:"),
@@ -388,18 +361,20 @@ mod tests {
                             })
                             .unwrap_or(0);
                         if body.len() >= expected_len {
-                            break;
+                            break body[..expected_len].to_string();
                         }
                     }
-                }
-                let (yes_lp, no_lp) = if idx == 1 {
-                    (-0.10, -2.40)
-                } else {
-                    (-2.50, -0.09)
                 };
-                let body = format!(
-                    r#"{{"model":"qwen2.5-coder-1.5b","choices":[{{"message":{{"content":"YES"}},"logprobs":{{"content":[{{"token":"YES","logprob":{yes_lp},"top_logprobs":[{{"token":"YES","logprob":{yes_lp}}},{{"token":"NO","logprob":{no_lp}}}]}}]}}}}],"usage":{{"prompt_tokens":40,"completion_tokens":1,"total_tokens":41}}}}"#
-                );
+                let parsed: LocalRerankRequest =
+                    serde_json::from_str(&req_body).expect("parse request JSON");
+                let body = if call_idx == 1 {
+                    assert_eq!(parsed.documents.len(), 2);
+                    r#"{"model":"qwen3-reranker-0.6b-q8_0.gguf","results":[{"index":0,"relevance_score":0.974},{"index":1,"relevance_score":0.018}],"usage":{"prompt_tokens":140,"total_tokens":140}}"#
+                } else {
+                    assert_eq!(parsed.documents.len(), 1);
+                    assert_eq!(parsed.query, "Do exhibits comply?");
+                    r#"{"model":"qwen3-reranker-0.6b-q8_0.gguf","results":[{"index":0,"relevance_score":0.031}],"usage":{"prompt_tokens":95,"total_tokens":95}}"#
+                };
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                     body.len(),
@@ -411,8 +386,8 @@ mod tests {
         });
 
         let provider = LocalDecisionProvider::with_base_url(format!("http://{addr}"));
-        let req = DecisionRequest {
-            model_specifier: "local:qwen2.5-coder-1.5b-instruct".to_string(),
+        let docket_req = DecisionRequest {
+            model_specifier: "local:qwen3-reranker-0.6b".to_string(),
             state: "diff --git a/cli.rs b/cli.rs".to_string(),
             questions: BTreeMap::from([
                 ("a.md".to_string(), "Question A?".to_string()),
@@ -421,10 +396,27 @@ mod tests {
             timeout_ms: 2_000,
             call_label: None,
         };
-        let resp = provider.evaluate_decisions(&req).expect("evaluate local");
-        assert!(resp.scores["a.md"] > 0.90);
-        assert!(resp.scores["b.md"] < 0.10);
-        assert_eq!(resp.usage.prompt_tokens, 80);
+        let docket_resp = provider
+            .evaluate_decisions(&docket_req)
+            .expect("evaluate batched docket");
+        assert!(docket_resp.scores["a.md"] > 0.95);
+        assert!(docket_resp.scores["b.md"] < 0.05);
+        assert_eq!(docket_resp.usage.prompt_tokens, 140);
+
+        let vet_req = DecisionRequest {
+            model_specifier: "local:qwen3-reranker-0.6b".to_string(),
+            state: "Governing Canon + Violating Exhibit".to_string(),
+            questions: BTreeMap::from([(
+                "compliant".to_string(),
+                "Do exhibits comply?".to_string(),
+            )]),
+            timeout_ms: 2_000,
+            call_label: Some("a.md".to_string()),
+        };
+        let vet_resp = provider
+            .evaluate_decisions(&vet_req)
+            .expect("evaluate single-question vet");
+        assert!(vet_resp.scores["compliant"] < 0.05);
         server.join().expect("server joined");
     }
 }

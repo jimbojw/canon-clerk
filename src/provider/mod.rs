@@ -19,6 +19,7 @@ pub mod gemini;
 pub mod gemini_decisions;
 mod gemini_wire;
 pub mod local_decision;
+mod local_project;
 mod local_wire;
 mod requester;
 mod retry;
@@ -50,12 +51,11 @@ pub(crate) use gemini_decisions::{
 };
 pub(crate) use gemini_wire::{GeminiThinkingConfig, build_probe_thinking_config};
 pub use local_decision::{
-    LOCAL_DISCRIMINATOR_SYSTEM_PROMPT, LocalDecisionProvider, build_local_chat_completions_url,
-    classify_local_http_error,
+    LocalDecisionProvider, build_local_rerank_url, classify_local_http_error,
 };
-pub(crate) use local_decision::{post_local_chat_json, strip_local_prefix};
+pub(crate) use local_decision::{post_local_rerank_json, strip_local_prefix};
 pub(crate) use local_wire::{
-    LocalChatCompletionRequest, LocalChatCompletionResponse, extract_local_error_detail,
+    LocalRerankRequest, LocalRerankResponse, extract_local_error_detail,
     normalize_local_model_label,
 };
 pub use requester::{RetryObserver, SharedHttpRequester};

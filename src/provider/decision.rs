@@ -54,11 +54,11 @@ impl DecisionBudgetProfile {
         max_nouls_per_call: 48,
     };
 
-    /// Calibrated profile for local `8,192`-token discriminative daemons (`local:*`).
+    /// Calibrated profile for local `8,192`-token `/v1/rerank` discriminative daemons (`local:*`).
     pub const LOCAL_DECISION: Self = Self {
-        max_state_chars: 16_000,
-        max_batch_chars: 24_000,
-        max_nouls_per_call: 24,
+        max_state_chars: 12_000,
+        max_batch_chars: 18_000,
+        max_nouls_per_call: 8,
     };
 
     /// Resolves the deterministic [`DecisionBudgetProfile`] for a discriminative model specifier.
